@@ -31,6 +31,7 @@ class Praxis(commands.Cog):
         output = self._eval(args)
         if "```" in output:
             output = "illegal output (you are very naughty)"
+            await ctx.message.add_reaction("🟥")
         await ctx.send("```\n" + output + "\n```")
 
 
