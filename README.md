@@ -1,6 +1,10 @@
 # dave-bot
 A discord bot for Dave's discord server.
 
+# Setup
+
+Run `dave-bot.py` with Python3.10 after installing the `requirements.txt`. The bot token must be supplied in the `DISCORD_BOT_TOKEN` environment variable.
+
 # Features & Commands
 
 ## Squares
