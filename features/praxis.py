@@ -29,6 +29,8 @@ class Praxis(commands.Cog):
 
         logging.info(f"!praxis:\n{args}")
         output = self._eval(args)
+        if "```" in output:
+            output = "illegal output (you are very naughty)"
         await ctx.send("```\n" + output + "\n```")
 
 
