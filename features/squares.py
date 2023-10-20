@@ -19,9 +19,9 @@ class Color(Enum):
     RED = 2
 
 FEEDBACK = {
-    Color.GREEN: GREEN_FEEDBACK,
-    Color.YELLOW: YELLOW_FEEDBACK,
-    Color.RED: RED_FEEDBACK,
+    Color.GREEN : GREEN_FEEDBACK,
+    Color.YELLOW : YELLOW_FEEDBACK,
+    Color.RED : RED_FEEDBACK
 }
 
 SQUARES = { "🟥" : Color.RED, "🟨" : Color.YELLOW, "🟩" : Color.GREEN }
@@ -108,9 +108,12 @@ class Squares(commands.Cog):
         with open("reacts.data", 'wb') as f:
             pickle.dump(self._reacts, f)
 
-    async def close(self):
-        self.save_stats()
-        await super().close()
+    async def error(self, ctx, text):
+        embed = discord.Embed(
+            title="Squares",
+            description=text
+        )
+        await ctx.send(embed=embed)
 
     def _top_user_id(self, color):
         user_counts = [ (user_id, len(reacts)) for user_id, reacts in self._reacts[color].by_target_id.items() ]
@@ -141,7 +144,7 @@ class Squares(commands.Cog):
     async def _top(self, ctx, color):
         user_id = self._top_user_id(color)
         if user_id is None:
-            logging.error(f"no top user found for color({color})")
+            await self.error(ctx, f"No top user found for color({color.name.lower()}).")
             return
         user = await self.bot.fetch_user(user_id)
         await ctx.send(user.mention + ", " + self._feedback(color))
@@ -197,18 +200,29 @@ class Squares(commands.Cog):
         await self._on_reaction_upd(ctx)
 
     @commands.command()
+    async def info(self, ctx):
+        embed = discord.Embed(
+            title="Squares",
+            description=DESCRIPTION
+        )
+        await ctx.send(embed=embed)
+
+    @commands.command()
     async def squares(self, ctx):
         summary = self._summary()
         if not summary:
+            await self.error(ctx, "No users found.")
             return
 
-        ROWS_PER_PAGE=5
+        description = "All-time user behaviour statistics."
+
+        ROWS_PER_PAGE=10
         embeds = []
         i = 0
         while i < len(summary):
             embed = discord.Embed(
-                title="Behaviour Statistics",
-                description=DESCRIPTION
+                title="Squares",
+                description=description
             )
             table = ""
             page = summary[i:i+ROWS_PER_PAGE]
@@ -227,15 +241,6 @@ class Squares(commands.Cog):
         else:
             assert(len(embeds) == 1)
             await ctx.send(embed=embeds[0])
-
-
-async def squares(ctx):
-    embeds = await get_embeds()
-    if len(embeds) == 1:
-        await ctx.send(embed=embeds[0])
-    elif len(embeds) > 1:
-        await Paginator.Simple().start(ctx, pages=embeds)
-
 
 
 async def setup(bot):
