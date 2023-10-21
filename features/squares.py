@@ -168,6 +168,10 @@ class Squares(commands.Cog):
         channel = await self.bot.fetch_channel(ctx.channel_id)
         message = await channel.fetch_message(ctx.message_id)
 
+        if message.author.id == ctx.user_id:
+            logging.info(f"ignore {color} self-react by user({ctx.user_id}) on message({message.id})")
+            return
+
         discord_reaction = None
         for reaction in message.reactions:
             if reaction.emoji == ctx.emoji.name:
