@@ -60,7 +60,7 @@ class Reacts:
         self._add(react, react.target_id, self.by_target_id)
 
     def remove(self, react):
-        logging.info(f"remove {self.color} react by {react.source_id} to {react.target_id} on message({target.message_id})")
+        logging.info(f"remove {self.color} react by {react.source_id} to {react.target_id} on message({react.message_id})")
         self._remove(react, react.message_id, self.by_message_id)
         self._remove(react, react.target_id, self.by_target_id)
 
@@ -161,7 +161,7 @@ class Squares(commands.Cog):
     async def topred(self, ctx):
         await self._top(ctx, Color.RED)
 
-    async def _on_reaction_upd(self, ctx):
+    async def _on_reaction_upd(self, ctx, remove=False):
         color = SQUARES.get(ctx.emoji.name)
         if color is None:
             return
@@ -174,20 +174,21 @@ class Squares(commands.Cog):
                 discord_reaction = reaction
                 break
 
-        if discord_reaction is None:
-            self._reacts[color].remove_all(message.id)
+        if remove:
+            if discord_reaction is None:
+                self._reacts[color].remove_all(message.id)
+            else:
+                found = False
+                for react in self._reacts[color].by_message_id.get(message.id, []):
+                    if react.source_id == ctx.user_id:
+                        self._reacts[color].remove(react)
+                        found = True
+                        break
+                if not found:
+                    logging.error(f"{color} react by user({ctx.user_id}) on message({message.id}) not found")
         else:
-            source_ids = { user.id async for user in discord_reaction.users() if user.id != message.author.id }
-            # Remove reactions which have been removed from discord.
-            for react in self._reacts[color].by_message_id.get(message.id, []):
-                if react.source_id in source_ids:
-                    source_ids.remove(react.source_id)
-                else:
-                    self._reacts[color].remove(react)
-            # Add reactions which have been added to discord.
-            for source_id in source_ids:
-                react = React(message.id, message.author.id, source_id, datetime.now())
-                self._reacts[color].add(react)
+            react = React(message.id, message.author.id, ctx.user_id, datetime.now())
+            self._reacts[color].add(react)
 
         self._save_reacts()
 
@@ -197,7 +198,7 @@ class Squares(commands.Cog):
 
     @commands.Cog.listener()
     async def on_raw_reaction_remove(self, ctx):
-        await self._on_reaction_upd(ctx)
+        await self._on_reaction_upd(ctx, remove=True)
 
     @commands.command()
     async def info(self, ctx):
