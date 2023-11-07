@@ -115,12 +115,12 @@ class Squares(commands.Cog):
         )
         await ctx.send(embed=embed)
 
-    def _top_user_id(self, color):
-        user_counts = [ (user_id, len(reacts)) for user_id, reacts in self._reacts[color].by_target_id.items() ]
-        if not user_counts:
+    def _top_user_by(self, tally_fn):
+        entries = [ (user_id, tally_fn(self._tally(user_id))) for user_id in self._user_ids() ]
+        if not entries:
             return None
-        max_count = max(map(lambda user_count: user_count[1], user_counts))
-        return random.choice([ user_id for user_id, count in user_counts if count == max_count ])
+        top = max(map(lambda entry: entry[1], entries))
+        return random.choice([ user_id for user_id, score in entries if score == top ])
 
     def _tally_color(self, user_id, color):
         return len(self._reacts[color].by_target_id.get(user_id, []))
@@ -131,10 +131,12 @@ class Squares(commands.Cog):
     def _score(self, tally):
         return tally[Color.GREEN] * 2 + tally[Color.YELLOW] * (-1) + tally[Color.RED] * (-2)
 
+    def _user_ids(self):
+        return set().union(*(set(self._reacts[color].by_target_id.keys()) for color in Color))
+
     # A list of users and their tallies, ordered by decreasing score
     def _summary(self):
-        user_ids = set().union(*(set(self._reacts[color].by_target_id.keys()) for color in Color))
-        summary = [ (user_id, self._tally(user_id)) for user_id in user_ids ]
+        summary = [ (user_id, self._tally(user_id)) for user_id in self._user_ids() ]
         summary.sort(key=lambda user_tally: self._score(user_tally[1]), reverse=True)
         return summary
 
@@ -142,7 +144,7 @@ class Squares(commands.Cog):
         return random.choice(FEEDBACK[color])
 
     async def _top(self, ctx, color):
-        user_id = self._top_user_id(color)
+        user_id = self._top_user_by(lambda tally: tally[color])
         if user_id is None:
             await self.error(ctx, f"No top user found for color({color.name.lower()}).")
             return
@@ -160,6 +162,24 @@ class Squares(commands.Cog):
     @commands.command()
     async def topred(self, ctx):
         await self._top(ctx, Color.RED)
+
+    @commands.command()
+    async def bestbehaved(self, ctx):
+        user_id = self._top_user_by(lambda tally: self._score(tally))
+        if user_id is None:
+            await self.error(ctx, f"No best behaved user found.")
+            return
+        user = await self.bot.fetch_user(user_id)
+        await ctx.send(user.mention + ", " + self._feedback(Color.GREEN))
+
+    @commands.command()
+    async def worstbehaved(self, ctx):
+        user_id = self._top_user_by(lambda tally: -self._score(tally))
+        if user_id is None:
+            await self.error(ctx, f"No worst behaved user found.")
+            return
+        user = await self.bot.fetch_user(user_id)
+        await ctx.send(user.mention + ", " + self._feedback(Color.RED))
 
     async def _on_reaction_upd(self, ctx, remove=False):
         color = SQUARES.get(ctx.emoji.name)
