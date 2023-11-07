@@ -115,12 +115,13 @@ class Squares(commands.Cog):
         )
         await ctx.send(embed=embed)
 
-    def _top_user_by(self, tally_fn):
+    async def _top_user_by(self, tally_fn):
         entries = [ (user_id, tally_fn(self._tally(user_id))) for user_id in self._user_ids() ]
         if not entries:
             return None
         top = max(map(lambda entry: entry[1], entries))
-        return random.choice([ user_id for user_id, score in entries if score == top ])
+        user_id = random.choice([ user_id for user_id, score in entries if score == top ])
+        return await self.try_fetch_user(user_id)
 
     def _tally_color(self, user_id, color):
         return len(self._reacts[color].by_target_id.get(user_id, []))
@@ -135,8 +136,8 @@ class Squares(commands.Cog):
         return set().union(*(set(self._reacts[color].by_target_id.keys()) for color in Color))
 
     # A list of users and their tallies, ordered by decreasing score
-    def _summary(self):
-        summary = [ (user_id, self._tally(user_id)) for user_id in self._user_ids() ]
+    async def _summary(self):
+        summary = [ (user, self._tally(user_id)) for user_id in self._user_ids() if (user := await self.try_fetch_user(user_id)) is not None ]
         summary.sort(key=lambda user_tally: self._score(user_tally[1]), reverse=True)
         return summary
 
@@ -144,11 +145,10 @@ class Squares(commands.Cog):
         return random.choice(FEEDBACK[color])
 
     async def _top(self, ctx, color):
-        user_id = self._top_user_by(lambda tally: tally[color])
-        if user_id is None:
+        user = await self._top_user_by(lambda tally: tally[color])
+        if user is None:
             await self.error(ctx, f"No top user found for color({color.name.lower()}).")
             return
-        user = await self.bot.fetch_user(user_id)
         await ctx.send(user.mention + ", " + self._feedback(color))
 
     @commands.command()
@@ -165,20 +165,18 @@ class Squares(commands.Cog):
 
     @commands.command()
     async def bestbehaved(self, ctx):
-        user_id = self._top_user_by(lambda tally: self._score(tally))
-        if user_id is None:
+        user = await self._top_user_by(lambda tally: self._score(tally))
+        if user is None:
             await self.error(ctx, f"No best behaved user found.")
             return
-        user = await self.bot.fetch_user(user_id)
         await ctx.send(user.mention + ", " + self._feedback(Color.GREEN))
 
     @commands.command()
     async def worstbehaved(self, ctx):
-        user_id = self._top_user_by(lambda tally: -self._score(tally))
-        if user_id is None:
+        user = await self._top_user_by(lambda tally: -self._score(tally))
+        if user is None:
             await self.error(ctx, f"No worst behaved user found.")
             return
-        user = await self.bot.fetch_user(user_id)
         await ctx.send(user.mention + ", " + self._feedback(Color.RED))
 
     async def _on_reaction_upd(self, ctx, remove=False):
@@ -190,6 +188,11 @@ class Squares(commands.Cog):
 
         if message.author.id == ctx.user_id:
             logging.info(f"ignore {color} self-react by user({ctx.user_id}) on message({message.id})")
+            return
+
+        # Could just do `not message.author.bot` but this would exclude the bot itself.
+        if await self.try_fetch_user(message.author.id) is None:
+            logging.info(f"ignore {color} react on non-user({message.author.id})")
             return
 
         discord_reaction = None
@@ -232,9 +235,18 @@ class Squares(commands.Cog):
         )
         await ctx.send(embed=embed)
 
+    async def try_fetch_user(self, user_id):
+        if user_id is None:
+            return None
+        try:
+            return await self.bot.fetch_user(user_id)
+        except discord.errors.NotFound:
+            logging.debug(f"failed to fetch user({user_id})")
+            return None
+
     @commands.command()
     async def squares(self, ctx):
-        summary = self._summary()
+        summary = await self._summary()
         if not summary:
             await self.error(ctx, "No users found.")
             return
@@ -251,8 +263,7 @@ class Squares(commands.Cog):
             )
             table = ""
             page = summary[i:i+ROWS_PER_PAGE]
-            for (user_id, tally) in page:
-                user = await self.bot.fetch_user(user_id)
+            for (user, tally) in page:
                 row = f"{i+1}. {user.name}: {tally[Color.GREEN]}🟩 {tally[Color.YELLOW]}🟨 {tally[Color.RED]}🟥"
                 if table != "":
                     table += "\n"
