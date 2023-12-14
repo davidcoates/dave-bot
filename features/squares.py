@@ -190,10 +190,18 @@ class Squares(commands.Cog):
             logging.info(f"ignore {color} self-react by user({ctx.user_id}) on message({message.id})")
             return
 
-        # Could just do `not message.author.bot` but this would exclude the bot itself.
         if await self.try_fetch_user(message.author.id) is None:
             logging.info(f"ignore {color} react on non-user({message.author.id})")
             return
+
+        reactor = await self.try_fetch_user(ctx.user_id)
+
+        if reactor is None:
+            logging.info(f"ignore {color} react by non-user({ctx.user_id})")
+            return
+
+        if reactor.bot and reactor.id != self.bot.user.id:
+            logging.info(f"ignore {color} react by bot({reactor.id})")
 
         discord_reaction = None
         for reaction in message.reactions:
