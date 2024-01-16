@@ -26,6 +26,8 @@ FEEDBACK = {
 
 SQUARES = { "🟥" : Color.RED, "🟨" : Color.YELLOW, "🟩" : Color.GREEN }
 
+IGNORED_USER_IDS = { 306917480432140301 }
+
 @dataclass
 class React:
     message_id: int
@@ -133,7 +135,7 @@ class Squares(commands.Cog):
         return tally[Color.GREEN] * 2 + tally[Color.YELLOW] * (-1) + tally[Color.RED] * (-2)
 
     def _user_ids(self):
-        return set().union(*(set(self._reacts[color].by_target_id.keys()) for color in Color))
+        return set().union(*(set(self._reacts[color].by_target_id.keys()) for color in Color)).difference(IGNORED_USER_IDS)
 
     # A list of users and their tallies, ordered by decreasing score
     async def _summary(self):
