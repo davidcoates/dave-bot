@@ -83,6 +83,9 @@ class Reacts:
             if not dictionary[key]:
                 del dictionary[key]
 
+    def __len__(self):
+        return sum(len(reacts) for reacts in self.by_target_id.values())
+
 
 class Squares(commands.Cog):
 
@@ -95,6 +98,10 @@ class Squares(commands.Cog):
         try:
             with open("reacts.data", 'rb') as f:
                 self._reacts = pickle.load(f)
+            logging.info("loaded reacts from file: #reacts(%d) #messages(%d) #targets(%d)",
+                sum(len(self._reacts[color]) for color in Color),
+                sum(len(self._reacts[color].by_message_id) for color in Color),
+                sum(len(self._reacts[color].by_target_id) for color in Color))
         except FileNotFoundError:
             self._reacts = {
                 Color.GREEN : Reacts(Color.GREEN),
