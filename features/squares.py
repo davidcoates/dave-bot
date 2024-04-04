@@ -10,7 +10,12 @@ import discord
 from discord.ext import commands
 import Paginator
 
-from .squares_text import *
+
+GREEN_DESCRIPTION = "🟩 Green is the highest level of privileges (when the child is behaving well)."
+YELLOW_DESCRIPTION = "🟨 Yellow is the next level (when the child is engaging in minor problem behaviors)."
+RED_DESCRIPTION = "🟥 Red is the level on which the child is engaging in severe problem behaviors, such as a meltdown or aggressive behavior."
+
+DESCRIPTION = GREEN_DESCRIPTION + "\n\n" + YELLOW_DESCRIPTION + "\n\n" + RED_DESCRIPTION + "\n\n"
 
 
 class Color(Enum):
@@ -117,14 +122,6 @@ class Squares(commands.Cog):
         )
         await ctx.send(embed=embed)
 
-    async def _top_user_by(self, tally_fn):
-        entries = [ (user_id, tally_fn(self._tally(user_id))) for user_id in self._user_ids() ]
-        if not entries:
-            return None
-        top = max(map(lambda entry: entry[1], entries))
-        user_id = random.choice([ user_id for user_id, score in entries if score == top ])
-        return await self.try_fetch_user(user_id)
-
     def _tally_color(self, user_id, color):
         return len(self._reacts[color].by_target_id.get(user_id, []))
 
@@ -142,44 +139,6 @@ class Squares(commands.Cog):
         summary = [ (user, self._tally(user_id)) for user_id in self._user_ids() if (user := await self.try_fetch_user(user_id)) is not None ]
         summary.sort(key=lambda user_tally: self._score(user_tally[1]), reverse=True)
         return summary
-
-    def _feedback(self, color):
-        return random.choice(FEEDBACK[color])
-
-    async def _top(self, ctx, color):
-        user = await self._top_user_by(lambda tally: tally[color])
-        if user is None:
-            await self.error(ctx, f"No top user found for color({color.name.lower()}).")
-            return
-        await ctx.send(user.mention + ", " + self._feedback(color))
-
-    @commands.command()
-    async def topgreen(self, ctx):
-        await self._top(ctx, Color.GREEN)
-
-    @commands.command()
-    async def topyellow(self, ctx):
-        await self._top(ctx, Color.YELLOW)
-
-    @commands.command()
-    async def topred(self, ctx):
-        await self._top(ctx, Color.RED)
-
-    @commands.command()
-    async def bestbehaved(self, ctx):
-        user = await self._top_user_by(lambda tally: self._score(tally))
-        if user is None:
-            await self.error(ctx, f"No best behaved user found.")
-            return
-        await ctx.send(user.mention + ", " + self._feedback(Color.GREEN))
-
-    @commands.command()
-    async def worstbehaved(self, ctx):
-        user = await self._top_user_by(lambda tally: -self._score(tally))
-        if user is None:
-            await self.error(ctx, f"No worst behaved user found.")
-            return
-        await ctx.send(user.mention + ", " + self._feedback(Color.RED))
 
     async def _on_reaction_upd(self, ctx, remove=False):
         color = SQUARES.get(ctx.emoji.name)

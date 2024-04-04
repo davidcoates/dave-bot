@@ -14,5 +14,3 @@ Tracks users whose messages receive green, yellow, and red square reacts. These 
 Commands:
 - `!info`: A decription of the square colours.
 - `!squares`: Show a summary of behavious statistics.
-- `!topgreen`, `!topyellow`, `!topred`: Gives a message of honest feedback to the user with the highest number of reacts received for the specified color.
-- `!bestbehaved`, `!worstbehaved`: Gives a message of honest feedback to the user with highest/lowest score based on a secret formula.
