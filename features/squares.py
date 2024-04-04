@@ -23,12 +23,6 @@ class Color(Enum):
     YELLOW = 1
     RED = 2
 
-FEEDBACK = {
-    Color.GREEN : GREEN_FEEDBACK,
-    Color.YELLOW : YELLOW_FEEDBACK,
-    Color.RED : RED_FEEDBACK
-}
-
 SQUARES = { "🟥" : Color.RED, "🟨" : Color.YELLOW, "🟩" : Color.GREEN }
 
 @dataclass
