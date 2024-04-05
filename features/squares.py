@@ -17,7 +17,7 @@ RED_DESCRIPTION = "🟥 Red is the level on which the child is engaging in sever
 
 DESCRIPTION = GREEN_DESCRIPTION + "\n\n" + YELLOW_DESCRIPTION + "\n\n" + RED_DESCRIPTION + "\n\n"
 
-SQUAREBOARD_THRESHOLD = 5
+SQUAREBOARD_THRESHOLD = 8
 
 class Color(Enum):
     GREEN = 0
@@ -106,7 +106,7 @@ class Message:
 @dataclass
 class SquareboardEntry:
     squareboard_message_id: int
-    square_counts: Dict[Color, int]
+    tally: Dict[Color, int]
 
 
 class Squares(commands.Cog):
@@ -116,7 +116,7 @@ class Squares(commands.Cog):
         self._load_reacts()
         self._load_message_cache()
         self._load_squareboard()
-        self._squareboard = None
+        self._squareboard_channel = None
 
     def _load_reacts(self):
         logging.info("load reacts")
@@ -172,22 +172,25 @@ class Squares(commands.Cog):
         )
         await ctx.send(embed=embed)
 
-    def _tally_color(self, user_id, color):
+    def _message_tally(self, message_id):
+        return { color : len(self._reacts[color].by_message_id.get(message_id, [])) for color in Color }
+
+    def _user_tally_color(self, user_id, color):
         return len(self._reacts[color].by_target_id.get(user_id, []))
 
-    def _tally(self, user_id):
-        return { color : self._tally_color(user_id, color) for color in Color }
+    def _user_tally(self, user_id):
+        return { color : self._user_tally_color(user_id, color) for color in Color }
 
-    def _score(self, tally):
-        return tally[Color.GREEN] * 2 + tally[Color.YELLOW] * (-1) + tally[Color.RED] * (-2)
+    def _user_score(self, user_tally):
+        return user_tally[Color.GREEN] * 2 + user_tally[Color.YELLOW] * (-1) + user_tally[Color.RED] * (-2)
 
     def _user_ids(self):
         return set().union(*(set(self._reacts[color].by_target_id.keys()) for color in Color))
 
     # A list of users and their tallies, ordered by decreasing score
     async def _summary(self):
-        summary = [ (user, self._tally(user_id)) for user_id in self._user_ids() if (user := await self._try_fetch_user(user_id)) is not None ]
-        summary.sort(key=lambda user_tally: self._score(user_tally[1]), reverse=True)
+        summary = [ (user, self._user_tally(user_id)) for user_id in self._user_ids() if (user := await self._try_fetch_user(user_id)) is not None ]
+        summary.sort(key=lambda user_and_tally: self._user_score(user_and_tally[1]), reverse=True)
         return summary
 
     async def _on_reaction_upd(self, ctx, remove=False):
@@ -239,7 +242,7 @@ class Squares(commands.Cog):
             self._reacts[color].add(react)
 
         self._save_reacts()
-        await self._refresh_squareboard(ctx, channel, message)
+        await self._refresh_squareboard_for_message(message)
 
 
     @commands.Cog.listener()
@@ -266,7 +269,6 @@ class Squares(commands.Cog):
         except discord.errors.NotFound:
             logging.debug(f"failed to fetch user({user_id})")
             return None
-
 
     async def _fetch_message(self, channel, message_id):
         message = await channel.fetch_message(message_id)
@@ -360,9 +362,9 @@ class Squares(commands.Cog):
             await ctx.send(embed=embeds[0])
 
 
-    def _format_squareboard_entry(self, message, square_counts):
-        content = ', '.join([ str(square_counts[color]) + " " + COLOR_TO_SQUARE[color] for color in Color if square_counts[color] > 0 ])
-        match max(Color, key=lambda color: square_counts[color]):
+    def _format_squareboard_entry(self, message, tally):
+        content = ' '.join([ str(tally[color]) + " " + COLOR_TO_SQUARE[color] for color in Color if tally[color] > 0 ])
+        match max(Color, key=lambda color: tally[color]):
             case Color.RED:
                 embed_color = discord.Colour.red()
             case Color.YELLOW:
@@ -373,46 +375,69 @@ class Squares(commands.Cog):
             description = message.content,
             colour = embed_color
         )
-        embed.set_author(name=message.author.name, icon_url=message.author.avatar.url)
+        embed.set_author(name=message.author.name, icon_url=(message.author.avatar.url if message.author.avatar is not None else None))
         embed.add_field(name="Original", value=f"[Jump!]({message.jump_url})", inline=False)
         return content, embed
 
-    async def _refresh_squareboard(self, ctx, channel, message):
 
-        if self._squareboard is None:
+    async def _refresh_squareboard_historical(self, ctx):
+
+        logging.info("refreshing squareboard (this may take a while)")
+
+        message_ids_to_refresh = set()
+
+        # add all messages with more than the threshold number of squares
+        all_message_ids = set(message_id for color in Color for message_id in self._reacts[color].by_message_id)
+        message_ids_to_refresh.update(message_id for message_id in all_message_ids if sum(self._message_tally(message_id).values()) >= SQUAREBOARD_THRESHOLD)
+
+        # add all messages already on the squareboard (we may need to amend / delete)
+        message_ids_to_refresh.update(self._squareboard_entries_by_id.keys())
+
+        for message_id in message_ids_to_refresh:
+            cached_message = await self._fetch_cached_message(ctx, message_id)
+            channel = await self._bot.fetch_channel(cached_message.channel_id)
+            message = await self._fetch_message(channel, message_id)
+            await self._refresh_squareboard_for_message(message)
+
+        logging.info("squareboard refreshed")
+
+
+    async def _refresh_squareboard_for_message(self, message):
+
+        if self._squareboard_channel is None:
             assert len(self._bot.guilds) == 1
             guild = self._bot.guilds[0]
-            [ self._squareboard ] = [ channel for channel in guild.text_channels if channel.name == "squareboard" ]
+            [ self._squareboard_channel ] = [ channel for channel in guild.text_channels if channel.name == "squareboard" ]
 
-        square_counts = { color : len(self._reacts[color].by_message_id.get(message.id, [])) for color in Color }
-        total_square_count = sum(square_counts.values())
+        tally = self._message_tally(message.id)
+        total_squares = sum(tally.values())
 
         squareboard_entry = self._squareboard_entries_by_id.get(message.id)
         upd = False
 
         if squareboard_entry is None:
-            if total_square_count >= SQUAREBOARD_THRESHOLD:
+            if total_squares >= SQUAREBOARD_THRESHOLD:
                 # insert
-                logging.info("squareboard insert message(%s) square_counts(%s)", message.id, square_counts)
-                (content, embed) = self._format_squareboard_entry(message, square_counts)
-                squareboard_message = await self._squareboard.send(content=content, embed=embed)
-                self._squareboard_entries_by_id[message.id] = SquareboardEntry(squareboard_message.id, square_counts)
+                logging.info("squareboard insert message(%s) tally(%s)", message.id, tally)
+                (content, embed) = self._format_squareboard_entry(message, tally)
+                squareboard_message = await self._squareboard_channel.send(content=content, embed=embed)
+                self._squareboard_entries_by_id[message.id] = SquareboardEntry(squareboard_message.id, tally)
                 upd = True
         else:
-            if total_square_count < SQUAREBOARD_THRESHOLD:
+            if total_squares < SQUAREBOARD_THRESHOLD:
                 # delete
-                logging.info("squareboard delete message(%s) square_counts(%s)", message.id, square_counts)
-                squareboard_message = await self._fetch_message(self._squareboard, squareboard_entry.squareboard_message_id)
+                logging.info("squareboard delete message(%s) tally(%s)", message.id, tally)
+                squareboard_message = await self._fetch_message(self._squareboard_channel, squareboard_entry.squareboard_message_id)
                 await squareboard_message.delete()
                 del self._squareboard_entries_by_id[message.id]
                 upd = True
-            elif square_counts != squareboard_entry.square_counts:
+            elif tally != squareboard_entry.tally:
                 # amend
-                logging.info("squareboard amend message(%s) square_counts(%s)", message.id, square_counts)
-                squareboard_message = await self._fetch_message(self._squareboard, squareboard_entry.squareboard_message_id)
-                (content, embed) = self._format_squareboard_entry(message, square_counts)
+                logging.info("squareboard amend message(%s) tally(%s)", message.id, tally)
+                squareboard_message = await self._fetch_message(self._squareboard_channel, squareboard_entry.squareboard_message_id)
+                (content, embed) = self._format_squareboard_entry(message, tally)
                 await squareboard_message.edit(content=content, embed=embed)
-                self._squareboard_entries_by_id[message.id].square_counts = square_counts
+                self._squareboard_entries_by_id[message.id].tally = tally
                 upd = True
 
         if upd:
