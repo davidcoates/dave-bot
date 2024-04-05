@@ -17,6 +17,7 @@ RED_DESCRIPTION = "🟥 Red is the level on which the child is engaging in sever
 
 DESCRIPTION = GREEN_DESCRIPTION + "\n\n" + YELLOW_DESCRIPTION + "\n\n" + RED_DESCRIPTION + "\n\n"
 
+SQUAREBOARD_THRESHOLD = 5
 
 class Color(Enum):
     GREEN = 0
@@ -102,12 +103,20 @@ class Message:
         self.jump_url = message.jump_url
 
 
+@dataclass
+class SquareboardEntry:
+    squareboard_message_id: int
+    square_counts: Dict[Color, int]
+
+
 class Squares(commands.Cog):
 
     def __init__(self, bot):
         self._bot = bot
         self._load_reacts()
         self._load_message_cache()
+        self._load_squareboard()
+        self._squareboard = None
 
     def _load_reacts(self):
         logging.info("load reacts")
@@ -129,6 +138,32 @@ class Squares(commands.Cog):
         logging.info("save reacts")
         with open("reacts.data", 'wb') as f:
             pickle.dump(self._reacts, f)
+
+    def _load_message_cache(self):
+        logging.info("load message cache")
+        try:
+            with open("messages.data", 'rb') as f:
+                self._messages_by_id = pickle.load(f)
+        except FileNotFoundError:
+            self._messages_by_id = dict()
+
+    def _save_message_cache(self):
+        logging.info("save message cache")
+        with open("messages.data", 'wb') as f:
+            pickle.dump(self._messages_by_id, f)
+
+    def _load_squareboard(self):
+        logging.info("load squareboard")
+        try:
+            with open("squareboard.data", 'rb') as f:
+                self._squareboard_entries_by_id = pickle.load(f)
+        except FileNotFoundError:
+            self._squareboard_entries_by_id = dict()
+
+    def _save_squareboard(self):
+        logging.info("save squareboard")
+        with open("squareboard.data", 'wb') as f:
+            pickle.dump(self._squareboard_entries_by_id, f)
 
     async def _error(self, ctx, text):
         embed = discord.Embed(
@@ -156,11 +191,13 @@ class Squares(commands.Cog):
         return summary
 
     async def _on_reaction_upd(self, ctx, remove=False):
+
         color = SQUARE_TO_COLOR.get(ctx.emoji.name)
         if color is None:
             return
+
         channel = await self._bot.fetch_channel(ctx.channel_id)
-        message = await self._fetch_message(ctx, channel, ctx.message_id)
+        message = await self._fetch_message(channel, ctx.message_id)
 
         if message.author.id == ctx.user_id:
             logging.info(f"ignore {color} self-react by user({ctx.user_id}) on message({message.id})")
@@ -202,6 +239,8 @@ class Squares(commands.Cog):
             self._reacts[color].add(react)
 
         self._save_reacts()
+        await self._refresh_squareboard(ctx, channel, message)
+
 
     @commands.Cog.listener()
     async def on_raw_reaction_add(self, ctx):
@@ -228,20 +267,8 @@ class Squares(commands.Cog):
             logging.debug(f"failed to fetch user({user_id})")
             return None
 
-    def _load_message_cache(self):
-        logging.info("load message cache")
-        try:
-            with open("messages.data", 'rb') as f:
-                self._messages_by_id = pickle.load(f)
-        except FileNotFoundError:
-            self._messages_by_id = dict()
 
-    def _save_message_cache(self):
-        logging.info("save message cache")
-        with open("messages.data", 'wb') as f:
-            pickle.dump(self._messages_by_id, f)
-
-    async def _fetch_message(self, ctx, channel, message_id):
+    async def _fetch_message(self, channel, message_id):
         message = await channel.fetch_message(message_id)
         if message_id not in self._messages_by_id:
             self._messages_by_id[message_id] = Message(message)
@@ -279,7 +306,7 @@ class Squares(commands.Cog):
             if user is None:
                 continue
             square = COLOR_TO_SQUARE[color]
-            embed.add_field(name=f"{react_count} x {square} {user.name}", value=f"{message.jump_url}", inline=False)
+            embed.add_field(name=f"{react_count} {square} {user.name}", value=f"{message.jump_url}", inline=False)
             i += 1
             if i >= 5:
                 break
@@ -331,6 +358,58 @@ class Squares(commands.Cog):
         else:
             assert(len(embeds) == 1)
             await ctx.send(embed=embeds[0])
+
+
+    def _format_squareboard_entry(self, message, square_counts):
+        content = ', '.join([ str(square_counts[color]) + " " + COLOR_TO_SQUARE[color] for color in Color if square_counts[color] > 0 ])
+        embed = discord.Embed(
+            description = message.content
+        )
+        embed.set_author(name=message.author.name, icon_url=message.author.avatar.url)
+        embed.add_field(name="Original", value=f"[Jump!]({message.jump_url})", inline=False)
+        return content, embed
+
+    async def _refresh_squareboard(self, ctx, channel, message):
+
+        if self._squareboard is None:
+            assert len(self._bot.guilds) == 1
+            guild = self._bot.guilds[0]
+            [ self._squareboard ] = [ channel for channel in guild.text_channels if channel.name == "squareboard" ]
+
+        square_counts = { color : len(self._reacts[color].by_message_id.get(message.id, [])) for color in Color }
+        total_square_count = sum(square_counts.values())
+
+        squareboard_entry = self._squareboard_entries_by_id.get(message.id)
+        upd = False
+
+        if squareboard_entry is None:
+            if total_square_count >= SQUAREBOARD_THRESHOLD:
+                # insert
+                logging.info("squareboard insert message(%s) square_counts(%s)", message.id, square_counts)
+                (content, embed) = self._format_squareboard_entry(message, square_counts)
+                squareboard_message = await self._squareboard.send(content=content, embed=embed)
+                self._squareboard_entries_by_id[message.id] = SquareboardEntry(squareboard_message.id, square_counts)
+                upd = True
+        else:
+            if total_square_count < SQUAREBOARD_THRESHOLD:
+                # delete
+                logging.info("squareboard delete message(%s) square_counts(%s)", message.id, square_counts)
+                squareboard_message = await self._fetch_message(self._squareboard, squareboard_entry.squareboard_message_id)
+                await squareboard_message.delete()
+                del self._squareboard_entries_by_id[message.id]
+                upd = True
+            elif square_counts != squareboard_entry.square_counts:
+                # amend
+                logging.info("squareboard amend message(%s) square_counts(%s)", message.id, square_counts)
+                squareboard_message = await self._fetch_message(self._squareboard, squareboard_entry.squareboard_message_id)
+                (content, embed) = self._format_squareboard_entry(message, square_counts)
+                await squareboard_message.edit(content=content, embed=embed)
+                self._squareboard_entries_by_id[message.id].square_counts = square_counts
+                upd = True
+
+        if upd:
+            self._save_squareboard()
+            pass
 
 
 async def setup(bot):
