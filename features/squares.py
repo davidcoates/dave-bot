@@ -403,6 +403,8 @@ class Squares(commands.Cog):
 
         for message_id in message_ids_to_refresh:
             cached_message = await self._fetch_cached_message(ctx, message_id)
+            if cached_message is None:
+                continue
             channel = await self._bot.fetch_channel(cached_message.channel_id)
             message = await self._fetch_message(channel, message_id)
             await self._refresh_squareboard_for_message(message)
