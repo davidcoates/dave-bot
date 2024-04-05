@@ -17,7 +17,7 @@ RED_DESCRIPTION = "🟥 Red is the level on which the child is engaging in sever
 
 DESCRIPTION = GREEN_DESCRIPTION + "\n\n" + YELLOW_DESCRIPTION + "\n\n" + RED_DESCRIPTION + "\n\n"
 
-SQUAREBOARD_THRESHOLD = 8
+SQUAREBOARD_THRESHOLD = 7
 
 class Color(Enum):
     GREEN = 0
@@ -380,6 +380,14 @@ class Squares(commands.Cog):
         return content, embed
 
 
+#    @commands.command()
+#    async def refresh(self, ctx):
+#        await self._refresh_squareboard_historical(ctx)
+
+    def _squareboard_score(self, message_id):
+        unique_squarers = { react.source_id for color in Color for react in self._reacts[color].by_message_id.get(message_id, []) }
+        return len(unique_squarers)
+
     async def _refresh_squareboard_historical(self, ctx):
 
         logging.info("refreshing squareboard (this may take a while)")
@@ -388,7 +396,7 @@ class Squares(commands.Cog):
 
         # add all messages with more than the threshold number of squares
         all_message_ids = set(message_id for color in Color for message_id in self._reacts[color].by_message_id)
-        message_ids_to_refresh.update(message_id for message_id in all_message_ids if sum(self._message_tally(message_id).values()) >= SQUAREBOARD_THRESHOLD)
+        message_ids_to_refresh.update(message_id for message_id in all_message_ids if self._squareboard_score(message_id) >= SQUAREBOARD_THRESHOLD)
 
         # add all messages already on the squareboard (we may need to amend / delete)
         message_ids_to_refresh.update(self._squareboard_entries_by_id.keys())
@@ -410,13 +418,13 @@ class Squares(commands.Cog):
             [ self._squareboard_channel ] = [ channel for channel in guild.text_channels if channel.name == "squareboard" ]
 
         tally = self._message_tally(message.id)
-        total_squares = sum(tally.values())
+        score = self._squareboard_score(message.id)
 
         squareboard_entry = self._squareboard_entries_by_id.get(message.id)
         upd = False
 
         if squareboard_entry is None:
-            if total_squares >= SQUAREBOARD_THRESHOLD:
+            if score >= SQUAREBOARD_THRESHOLD:
                 # insert
                 logging.info("squareboard insert message(%s) tally(%s)", message.id, tally)
                 (content, embed) = self._format_squareboard_entry(message, tally)
@@ -424,7 +432,7 @@ class Squares(commands.Cog):
                 self._squareboard_entries_by_id[message.id] = SquareboardEntry(squareboard_message.id, tally)
                 upd = True
         else:
-            if total_squares < SQUAREBOARD_THRESHOLD:
+            if score < SQUAREBOARD_THRESHOLD:
                 # delete
                 logging.info("squareboard delete message(%s) tally(%s)", message.id, tally)
                 squareboard_message = await self._fetch_message(self._squareboard_channel, squareboard_entry.squareboard_message_id)
