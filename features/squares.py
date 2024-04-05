@@ -362,8 +362,16 @@ class Squares(commands.Cog):
 
     def _format_squareboard_entry(self, message, square_counts):
         content = ', '.join([ str(square_counts[color]) + " " + COLOR_TO_SQUARE[color] for color in Color if square_counts[color] > 0 ])
+        match max(Color, key=lambda color: square_counts[color]):
+            case Color.RED:
+                embed_color = discord.Colour.red()
+            case Color.YELLOW:
+                embed_color = discord.Colour.yellow()
+            case Color.GREEN:
+                embed_color = discord.Colour.green()
         embed = discord.Embed(
-            description = message.content
+            description = message.content,
+            colour = embed_color
         )
         embed.set_author(name=message.author.name, icon_url=message.author.avatar.url)
         embed.add_field(name="Original", value=f"[Jump!]({message.jump_url})", inline=False)
