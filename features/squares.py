@@ -23,7 +23,8 @@ class Color(Enum):
     YELLOW = 1
     RED = 2
 
-SQUARES = { "🟥" : Color.RED, "🟨" : Color.YELLOW, "🟩" : Color.GREEN }
+SQUARE_TO_COLOR = { "🟥" : Color.RED, "🟨" : Color.YELLOW, "🟩" : Color.GREEN }
+COLOR_TO_SQUARE = { Color.RED : "🟥", Color.YELLOW : "🟨", Color.GREEN : "🟩" }
 
 @dataclass
 class React:
@@ -87,11 +88,26 @@ class Reacts:
         return sum(len(reacts) for reacts in self.by_target_id.values())
 
 
+@dataclass
+class Message:
+    message_id: int
+    channel_id: int
+    author_id: int
+    jump_url: str
+
+    def __init__(self, message):
+        self.message_id = message.id
+        self.channel_id = message.channel.id
+        self.author_id = message.author.id
+        self.jump_url = message.jump_url
+
+
 class Squares(commands.Cog):
 
     def __init__(self, bot):
-        self.bot = bot
+        self._bot = bot
         self._load_reacts()
+        self._load_message_cache()
 
     def _load_reacts(self):
         logging.info("load reacts")
@@ -114,7 +130,7 @@ class Squares(commands.Cog):
         with open("reacts.data", 'wb') as f:
             pickle.dump(self._reacts, f)
 
-    async def error(self, ctx, text):
+    async def _error(self, ctx, text):
         embed = discord.Embed(
             title="Squares",
             description=text
@@ -135,32 +151,32 @@ class Squares(commands.Cog):
 
     # A list of users and their tallies, ordered by decreasing score
     async def _summary(self):
-        summary = [ (user, self._tally(user_id)) for user_id in self._user_ids() if (user := await self.try_fetch_user(user_id)) is not None ]
+        summary = [ (user, self._tally(user_id)) for user_id in self._user_ids() if (user := await self._try_fetch_user(user_id)) is not None ]
         summary.sort(key=lambda user_tally: self._score(user_tally[1]), reverse=True)
         return summary
 
     async def _on_reaction_upd(self, ctx, remove=False):
-        color = SQUARES.get(ctx.emoji.name)
+        color = SQUARE_TO_COLOR.get(ctx.emoji.name)
         if color is None:
             return
-        channel = await self.bot.fetch_channel(ctx.channel_id)
-        message = await channel.fetch_message(ctx.message_id)
+        channel = await self._bot.fetch_channel(ctx.channel_id)
+        message = await self._fetch_message(ctx, channel, ctx.message_id)
 
         if message.author.id == ctx.user_id:
             logging.info(f"ignore {color} self-react by user({ctx.user_id}) on message({message.id})")
             return
 
-        if await self.try_fetch_user(message.author.id) is None:
+        if await self._try_fetch_user(message.author.id) is None:
             logging.info(f"ignore {color} react on non-user({message.author.id})")
             return
 
-        reactor = await self.try_fetch_user(ctx.user_id)
+        reactor = await self._try_fetch_user(ctx.user_id)
 
         if reactor is None:
             logging.info(f"ignore {color} react by non-user({ctx.user_id})")
             return
 
-        if reactor.bot and reactor.id != self.bot.user.id:
+        if reactor.bot and reactor.id != self._bot.user.id:
             logging.info(f"ignore {color} react by bot({reactor.id})")
 
         discord_reaction = None
@@ -203,20 +219,90 @@ class Squares(commands.Cog):
         )
         await ctx.send(embed=embed)
 
-    async def try_fetch_user(self, user_id):
+    async def _try_fetch_user(self, user_id):
         if user_id is None:
             return None
         try:
-            return await self.bot.fetch_user(user_id)
+            return await self._bot.fetch_user(user_id)
         except discord.errors.NotFound:
             logging.debug(f"failed to fetch user({user_id})")
             return None
+
+    def _load_message_cache(self):
+        logging.info("load message cache")
+        try:
+            with open("messages.data", 'rb') as f:
+                self._messages_by_id = pickle.load(f)
+        except FileNotFoundError:
+            self._messages_by_id = dict()
+
+    def _save_message_cache(self):
+        logging.info("save message cache")
+        with open("messages.data", 'wb') as f:
+            pickle.dump(self._messages_by_id, f)
+
+    async def _fetch_message(self, ctx, channel, message_id):
+        message = await channel.fetch_message(message_id)
+        if message_id not in self._messages_by_id:
+            self._messages_by_id[message_id] = Message(message)
+            self._save_message_cache()
+        return message
+
+    async def _fetch_cached_message(self, ctx, message_id) -> Optional[Message]:
+        message = self._messages_by_id.get(message_id)
+        if message is not None:
+            return message
+        for channel in ctx.guild.text_channels:
+            try:
+                message = Message(await channel.fetch_message(message_id))
+                self._messages_by_id[message_id] = message
+                self._save_message_cache()
+                return message
+            except discord.errors.NotFound:
+                continue
+        logging.error("message(%d) not found", message_id)
+        return None
+
+    async def _top(self, ctx, color):
+        messages = [ (message_id, len(reacts)) for message_id, reacts in self._reacts[color].by_message_id.items() ]
+        messages = sorted(messages, key=lambda p:p[1], reverse=True)
+        embed = discord.Embed(
+            title=f"Top {color.name.title()} Squared Messages"
+        )
+        table = ""
+        i = 0
+        for (message_id, react_count) in messages:
+            message = await self._fetch_cached_message(ctx, message_id)
+            if message is None:
+                continue
+            user = await self._try_fetch_user(message.author_id)
+            if user is None:
+                continue
+            square = COLOR_TO_SQUARE[color]
+            embed.add_field(name=f"{react_count} x {square} {user.name}", value=f"{message.jump_url}", inline=False)
+            i += 1
+            if i >= 5:
+                break
+        await ctx.send(embed=embed)
+
+
+    @commands.command()
+    async def topred(self, ctx):
+        await self._top(ctx, Color.RED)
+
+    @commands.command()
+    async def topyellow(self, ctx):
+        await self._top(ctx, Color.YELLOW)
+
+    @commands.command()
+    async def topgreen(self, ctx):
+        await self._top(ctx, Color.GREEN)
 
     @commands.command()
     async def squares(self, ctx):
         summary = await self._summary()
         if not summary:
-            await self.error(ctx, "No users found.")
+            await self._error(ctx, "No users found.")
             return
 
         description = "All-time user behaviour statistics."
@@ -233,7 +319,7 @@ class Squares(commands.Cog):
             page = summary[i:i+ROWS_PER_PAGE]
             for (user, tally) in page:
                 row = f"{i+1}. {user.name}: {tally[Color.GREEN]}🟩 {tally[Color.YELLOW]}🟨 {tally[Color.RED]}🟥"
-                if table != "":
+                if i != 0:
                     table += "\n"
                 table += row
                 i += 1

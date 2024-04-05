@@ -14,3 +14,4 @@ Tracks users whose messages receive green, yellow, and red square reacts. These 
 Commands:
 - `!info`: A decription of the square colours.
 - `!squares`: Show a summary of behavious statistics.
+- `!topred`, `!topyellow`, `!topgreen`: Show the most-squared messages for the given color.
