@@ -17,7 +17,7 @@ RED_DESCRIPTION = "🟥 Red is the level on which the child is engaging in sever
 
 DESCRIPTION = GREEN_DESCRIPTION + "\n\n" + YELLOW_DESCRIPTION + "\n\n" + RED_DESCRIPTION + "\n\n"
 
-SQUAREBOARD_THRESHOLD = 7
+SQUAREBOARD_THRESHOLD = 6
 
 class Color(Enum):
     GREEN = 0
