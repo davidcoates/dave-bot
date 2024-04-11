@@ -27,6 +27,8 @@ class Color(Enum):
 SQUARE_TO_COLOR = { "🟥" : Color.RED, "🟨" : Color.YELLOW, "🟩" : Color.GREEN }
 COLOR_TO_SQUARE = { Color.RED : "🟥", Color.YELLOW : "🟨", Color.GREEN : "🟩" }
 
+IGNORED_USER_IDS = { 306917480432140301 }
+
 @dataclass
 class React:
     message_id: int
@@ -185,7 +187,7 @@ class Squares(commands.Cog):
         return user_tally[Color.GREEN] * 2 + user_tally[Color.YELLOW] * (-1) + user_tally[Color.RED] * (-2)
 
     def _user_ids(self):
-        return set().union(*(set(self._reacts[color].by_target_id.keys()) for color in Color))
+        return set().union(*(set(self._reacts[color].by_target_id.keys()) for color in Color)).difference(IGNORED_USER_IDS)
 
     # A list of users and their tallies, ordered by decreasing score
     async def _summary(self):
@@ -262,7 +264,7 @@ class Squares(commands.Cog):
         await ctx.send(embed=embed)
 
     async def _try_fetch_user(self, user_id):
-        if user_id is None:
+        if user_id is None or user_id in IGNORED_USER_IDS:
             return None
         try:
             return await self._bot.fetch_user(user_id)
