@@ -119,6 +119,13 @@ class Squares(commands.Cog):
         self._load_message_cache()
         self._load_squareboard()
         self._squareboard_channel = None
+        self._users_by_id = {}
+
+    async def warmup(self):
+        logging.info("warming up...")
+        for user_id in self._user_ids():
+            await self._try_fetch_user(user_id)
+        logging.info("warmup finished")
 
     def _load_reacts(self):
         logging.info("load reacts")
@@ -266,11 +273,15 @@ class Squares(commands.Cog):
     async def _try_fetch_user(self, user_id):
         if user_id is None or user_id in IGNORED_USER_IDS:
             return None
+        if user_id in self._users_by_id:
+            return self._users_by_id[user_id]
+        user = None
         try:
-            return await self._bot.fetch_user(user_id)
+            user = await self._bot.fetch_user(user_id)
         except discord.errors.NotFound:
             logging.debug(f"failed to fetch user({user_id})")
-            return None
+        self._users_by_id[user_id] = user
+        return user
 
     async def _fetch_message(self, channel, message_id):
         message = await channel.fetch_message(message_id)
@@ -280,19 +291,20 @@ class Squares(commands.Cog):
         return message
 
     async def _fetch_cached_message(self, ctx, message_id) -> Optional[Message]:
-        message = self._messages_by_id.get(message_id)
-        if message is not None:
-            return message
+        if message_id in self._messages_by_id:
+            return self._messages_by_id[message_id]
+        message = None
         for channel in ctx.guild.text_channels:
             try:
                 message = Message(await channel.fetch_message(message_id))
-                self._messages_by_id[message_id] = message
-                self._save_message_cache()
-                return message
+                break
             except discord.errors.NotFound:
                 continue
-        logging.error("message(%d) not found", message_id)
-        return None
+        if message is None:
+            logging.error("message(%d) not found", message_id)
+        self._messages_by_id[message_id] = message
+        self._save_message_cache()
+        return message
 
     async def _top(self, ctx, color):
         messages = [ (message_id, len(reacts)) for message_id, reacts in self._reacts[color].by_message_id.items() ]
@@ -458,4 +470,6 @@ class Squares(commands.Cog):
 
 
 async def setup(bot):
-    await bot.add_cog(Squares(bot))
+    squares = Squares(bot)
+    await bot.add_cog(squares)
+    await squares.warmup()
