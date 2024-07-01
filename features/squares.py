@@ -10,6 +10,8 @@ import discord
 from discord.ext import commands
 import Paginator
 
+from lib.influx import *
+
 
 GREEN_DESCRIPTION = "🟩 Green is the highest level of privileges (when the child is behaving well)."
 YELLOW_DESCRIPTION = "🟨 Yellow is the next level (when the child is engaging in minor problem behaviors)."
@@ -120,11 +122,14 @@ class Squares(commands.Cog):
         self._load_squareboard()
         self._squareboard_channel = None
         self._users_by_id = {}
+        self._influx = InfluxDBClient()
 
     async def warmup(self):
         logging.info("warming up...")
         for user_id in self._user_ids():
-            await self._try_fetch_user(user_id)
+            user = await self._try_fetch_user(user_id)
+            if user is not None:
+                self._push_influx_user_stats(user)
         logging.info("warmup finished")
 
     def _load_reacts(self):
@@ -251,6 +256,7 @@ class Squares(commands.Cog):
             self._reacts[color].add(react)
 
         self._save_reacts()
+        self._push_influx_user_stats(message.author)
         await self._refresh_squareboard_for_message(message)
 
 
@@ -468,6 +474,16 @@ class Squares(commands.Cog):
             self._save_squareboard()
             pass
 
+    def _push_influx_user_stats(self, user):
+        tally = self._user_tally(user.id)
+        self._influx.write('squares_received', tags={
+            'user_id': user.id
+        }, fields={
+            'user_name': user.name,
+            'green': tally[Color.GREEN],
+            'yellow': tally[Color.YELLOW],
+            'red': tally[Color.RED]
+        })
 
 async def setup(bot):
     squares = Squares(bot)
