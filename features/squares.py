@@ -127,9 +127,7 @@ class Squares(commands.Cog):
     async def warmup(self):
         logging.info("warming up...")
         for user_id in self._user_ids():
-            user = await self._try_fetch_user(user_id)
-            if user is not None:
-                self._push_influx_user_stats(user)
+            await self._try_fetch_user(user_id)
         logging.info("warmup finished")
 
     def _load_reacts(self):
@@ -189,11 +187,14 @@ class Squares(commands.Cog):
     def _message_tally(self, message_id):
         return { color : len(self._reacts[color].by_message_id.get(message_id, [])) for color in Color }
 
-    def _user_tally_color(self, user_id, color):
-        return len(self._reacts[color].by_target_id.get(user_id, []))
+    def _user_tally_color(self, user_id, color, source_id=None):
+        reacts = self._reacts[color].by_target_id.get(user_id, [])
+        if source_id is not None:
+            reacts = [ react for react in reacts if react.source_id == source_id ]
+        return len(reacts)
 
-    def _user_tally(self, user_id):
-        return { color : self._user_tally_color(user_id, color) for color in Color }
+    def _user_tally(self, user_id, source_id=None):
+        return { color : self._user_tally_color(user_id, color, source_id) for color in Color }
 
     def _user_score(self, user_tally):
         return user_tally[Color.GREEN] * 2 + user_tally[Color.YELLOW] * (-1) + user_tally[Color.RED] * (-2)
@@ -256,7 +257,7 @@ class Squares(commands.Cog):
             self._reacts[color].add(react)
 
         self._save_reacts()
-        self._push_influx_user_stats(message.author)
+        self._push_influx_react(reactor, message.author)
         await self._refresh_squareboard_for_message(message)
 
 
@@ -474,16 +475,28 @@ class Squares(commands.Cog):
             self._save_squareboard()
             pass
 
-    def _push_influx_user_stats(self, user):
-        tally = self._user_tally(user.id)
+    def _push_influx_react(self, source, target):
+        tally = self._user_tally(target.id)
         self._influx.write('squares_received', tags={
-            'user_id': user.id
+            'user_id': target.id
         }, fields={
-            'user_name': user.name,
+            'user_name': target.name,
             'green': tally[Color.GREEN],
             'yellow': tally[Color.YELLOW],
             'red': tally[Color.RED]
         })
+        tally = self._user_tally(target.id, source.id)
+        self._influx.write('squares', tags={
+            'source_id': source.id,
+            'target_id': target.id
+        }, fields={
+            'source_name': source.name,
+            'target_name': target.name,
+            'green': tally[Color.GREEN],
+            'yellow': tally[Color.YELLOW],
+            'red': tally[Color.RED]
+        })
+
 
 async def setup(bot):
     squares = Squares(bot)
