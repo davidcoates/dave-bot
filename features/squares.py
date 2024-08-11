@@ -211,7 +211,7 @@ class Squares(commands.Cog):
     async def _on_reaction_upd(self, ctx, remove=False):
 
         color = SQUARE_TO_COLOR.get(ctx.emoji.name)
-        if color is None:
+        if color is None: # ignore non-square reacts
             return
 
         channel = await self._bot.fetch_channel(ctx.channel_id)
@@ -234,21 +234,27 @@ class Squares(commands.Cog):
         if reactor.bot and reactor.id != self._bot.user.id:
             logging.info(f"ignore {color} react by bot({reactor.id})")
 
+        # find or create the react object
         if remove:
-            found = False
-            for react in self._reacts[color].by_message_id.get(message.id, []):
-                if react.source_id == ctx.user_id:
-                    self._reacts[color].remove(react)
-                    found = True
+            react = None
+            for message_react in self._reacts[color].by_message_id.get(message.id, []):
+                if message_react.source_id == ctx.user_id:
+                    react = message_react
                     break
-            if not found:
+            if react is None:
                 logging.error(f"{color} react by user({ctx.user_id}) on message({message.id}) not found")
+                return
         else:
             react = React(message.id, message.author.id, ctx.user_id, datetime.now())
-            self._reacts[color].add(react)
 
-        self._save_reacts()
+        # hack: push to influx both before and after for differences to always be accurate
         self._push_influx_react(reactor, message.author)
+        if remove:
+            self._reacts[color].remove(react)
+        else:
+            self._reacts[color].add(react)
+        self._push_influx_react(reactor, message.author)
+        self._save_reacts()
         await self._refresh_squareboard_for_message(message)
 
 
