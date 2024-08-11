@@ -487,6 +487,7 @@ class Squares(commands.Cog):
         })
         tally = self._user_tally(target.id, source.id)
         self._influx.write('squares', tags={
+            'cross_id': f"{source.id}-{target.id}",
             'source_id': source.id,
             'target_id': target.id
         }, fields={
