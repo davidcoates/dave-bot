@@ -234,24 +234,15 @@ class Squares(commands.Cog):
         if reactor.bot and reactor.id != self._bot.user.id:
             logging.info(f"ignore {color} react by bot({reactor.id})")
 
-        discord_reaction = None
-        for reaction in message.reactions:
-            if reaction.emoji == ctx.emoji.name:
-                discord_reaction = reaction
-                break
-
         if remove:
-            if discord_reaction is None:
-                self._reacts[color].remove_all(message.id)
-            else:
-                found = False
-                for react in self._reacts[color].by_message_id.get(message.id, []):
-                    if react.source_id == ctx.user_id:
-                        self._reacts[color].remove(react)
-                        found = True
-                        break
-                if not found:
-                    logging.error(f"{color} react by user({ctx.user_id}) on message({message.id}) not found")
+            found = False
+            for react in self._reacts[color].by_message_id.get(message.id, []):
+                if react.source_id == ctx.user_id:
+                    self._reacts[color].remove(react)
+                    found = True
+                    break
+            if not found:
+                logging.error(f"{color} react by user({ctx.user_id}) on message({message.id}) not found")
         else:
             react = React(message.id, message.author.id, ctx.user_id, datetime.now())
             self._reacts[color].add(react)
