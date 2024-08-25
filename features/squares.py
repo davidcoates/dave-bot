@@ -354,23 +354,26 @@ class Squares(commands.Cog):
 
         description = "All-time user behaviour statistics."
 
-        ROWS_PER_PAGE=10
+        MAX_PAGE_LENGTH=200
+        rows = [
+            f"{i+1}. {user.name}: {tally[Color.GREEN]}🟩 {tally[Color.YELLOW]}🟨 {tally[Color.RED]}🟥"
+            for (i, (user, tally)) in enumerate(summary)
+        ]
         embeds = []
         i = 0
-        while i < len(summary):
+        while i < len(rows):
+            page = rows[i]
+            i += 1
+            while i < len(rows) and len(page) + 1 + len(rows[i]) <= MAX_PAGE_LENGTH:
+                page += "\n"
+                page += rows[i]
+                i += 1
+            assert len(page) <= MAX_PAGE_LENGTH
             embed = discord.Embed(
                 title="Squares",
                 description=description
             )
-            table = ""
-            page = summary[i:i+ROWS_PER_PAGE]
-            for (user, tally) in page:
-                row = f"{i+1}. {user.name}: {tally[Color.GREEN]}🟩 {tally[Color.YELLOW]}🟨 {tally[Color.RED]}🟥"
-                if i != 0:
-                    table += "\n"
-                table += row
-                i += 1
-            embed.add_field(name="```"+table+"```", value="", inline=False)
+            embed.add_field(name="```"+page+"```", value="", inline=False)
             embeds.append(embed)
 
         if len(embeds) > 1:
