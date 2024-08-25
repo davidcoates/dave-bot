@@ -354,7 +354,7 @@ class Squares(commands.Cog):
 
         description = "All-time user behaviour statistics."
 
-        MAX_PAGE_LENGTH=200
+        MAX_PAGE_LENGTH=240
         rows = [
             f"{i+1}. {user.name}: {tally[Color.GREEN]}🟩 {tally[Color.YELLOW]}🟨 {tally[Color.RED]}🟥"
             for (i, (user, tally)) in enumerate(summary)
