@@ -1,3 +1,4 @@
+from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
@@ -51,23 +52,27 @@ class React:
 @dataclass
 class Reacts:
     color: Color # For logging
-    by_message_id: dict[int, set[React]]
-    by_target_id: dict[int, set[React]]
+    by_message_id: defaultdict[int, set[React]]
+    by_target_id: defaultdict[int, set[React]]
+    by_source_id: defaultdict[int, set[React]]
 
     def __init__(self, color):
         self.color = color
-        self.by_message_id = dict()
-        self.by_target_id = dict()
+        self.by_message_id = defaultdict(set)
+        self.by_target_id = defaultdict(set)
+        self.by_source_id = defaultdict(set)
 
     def add(self, react):
         logging.info(f"add {self.color} react by {react.source_id} to {react.target_id} on message({react.message_id})")
-        self._add(react, react.message_id, self.by_message_id)
-        self._add(react, react.target_id, self.by_target_id)
+        self.by_message_id[react.message_id].add(react)
+        self.by_target_id[react.target_id].add(react)
+        self.by_source_id[react.source_id].add(react)
 
     def remove(self, react):
         logging.info(f"remove {self.color} react by {react.source_id} to {react.target_id} on message({react.message_id})")
-        self._remove(react, react.message_id, self.by_message_id)
-        self._remove(react, react.target_id, self.by_target_id)
+        self.by_message_id[react.message_id].discard(react)
+        self.by_target_id[react.target_id].discard(react)
+        self.by_source_id[react.source_id].discard(react)
 
     def remove_all(self, message_id):
         if message_id not in self.by_message_id:
@@ -75,19 +80,8 @@ class Reacts:
         logging.info(f"remove all {self.color} reacts on message({message_id})")
         reacts = self.by_message_id.pop(message_id)
         for react in reacts:
-            self._remove(react, react.target_id, self.by_target_id)
-
-    def _add(self, react, key, dictionary):
-        if key in dictionary:
-            dictionary[key].add(react)
-        else:
-            dictionary[key] = {react}
-
-    def _remove(self, react, key, dictionary):
-        if key in dictionary:
-            dictionary[key].discard(react)
-            if not dictionary[key]:
-                del dictionary[key]
+            self.by_target_id[react.target_id].discard(react)
+            self.by_source_id[react.source_id].discard(react)
 
     def __len__(self):
         return sum(len(reacts) for reacts in self.by_target_id.values())
