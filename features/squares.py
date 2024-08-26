@@ -36,7 +36,7 @@ class React:
     message_id: int
     target_id: int # The author of the message
     source_id: int # The person who reacted
-    timestamp: datetime # The time of the reaction
+    timestamp: Optional[datetime] # The time of the reaction
 
     def _id(self):
         return (self.message_id, self_target_id, self.source_id)
@@ -214,6 +214,35 @@ class Squares(commands.Cog):
         summary.sort(key=lambda entry: entry[2], reverse=True)
         return summary
 
+    async def _sync_message(self, message):
+        for reaction in message.reactions:
+            if not isinstance(reaction.emoji, str):
+                continue
+            color = SQUARE_TO_COLOR.get(reaction.emoji)
+            if color is None:
+                continue
+            actual_source_ids = { user.id async for user in reaction.users() if await self._is_valid_reactor_for_message(user.id, message) }
+            recorded_source_ids = { react.source_id for react in self._reacts[color].by_message_id[message.id] }
+            for source_id in actual_source_ids:
+                if source_id not in recorded_source_ids:
+                    logging.info(f"add phantom {color} react by user({source_id}) on message({message.id})")
+                    react = React(message.id, message.author.id, source_id, None)
+                    self._reacts[color].add(react)
+            reacts_to_remove = [ react for react in self._reacts[color].by_message_id[message.id] if react.source_id not in actual_source_ids ]
+            for react in reacts_to_remove:
+                logging.info(f"remove phantom {color} react by user({react.source_id}) on message({message.id})")
+                self._reacts[color].remove(react)
+
+    async def _is_valid_reactor_for_message(self, reactor_id, message):
+        if message.author.id == reactor_id:
+            return False
+        reactor = await self._try_fetch_user(reactor_id)
+        if reactor is None:
+            return False
+        if reactor.bot and reactor_id != self._bot.user_id:
+            return False
+        return True
+
     async def _on_reaction_upd(self, ctx, remove=False):
 
         color = SQUARE_TO_COLOR.get(ctx.emoji.name)
@@ -223,22 +252,16 @@ class Squares(commands.Cog):
         channel = await self._bot.fetch_channel(ctx.channel_id)
         message = await self._fetch_message(channel, ctx.message_id)
 
-        if message.author.id == ctx.user_id:
-            logging.info(f"ignore {color} self-react by user({ctx.user_id}) on message({message.id})")
-            return
-
         if await self._try_fetch_user(message.author.id) is None:
             logging.info(f"ignore {color} react on non-user({message.author.id})")
             return
 
-        reactor = await self._try_fetch_user(ctx.user_id)
-
-        if reactor is None:
-            logging.info(f"ignore {color} react by non-user({ctx.user_id})")
+        if not await self._is_valid_reactor_for_message(ctx.user_id, message):
+            logging.info(f"ignore invalid {color} react by user({ctx.user_id}) on message({message.id})")
             return
 
-        if reactor.bot and reactor.id != self._bot.user.id:
-            logging.info(f"ignore {color} react by bot({reactor.id})")
+        reactor = await self._try_fetch_user(ctx.user_id)
+        assert reactor is not None
 
         # find or create the react object
         if remove:
@@ -260,6 +283,7 @@ class Squares(commands.Cog):
         else:
             self._reacts[color].add(react)
         self._push_influx_react(reactor, message.author)
+        await self._sync_message(message)
         self._save_reacts()
         await self._refresh_squareboard_for_message(message)
 
