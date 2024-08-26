@@ -5,6 +5,7 @@ from enum import Enum
 import logging
 import random
 import pickle
+import math
 from typing import *
 
 import discord
@@ -82,6 +83,16 @@ class Reacts:
         for react in reacts:
             self.by_target_id[react.target_id].discard(react)
             self.by_source_id[react.source_id].discard(react)
+
+    def weighted_squares_received(self, target_id) -> int:
+        num_by_source_id = defaultdict(int)
+        for react in self.by_target_id[target_id]:
+            num_by_source_id[react.source_id] += 1
+        score = 0.0
+        for source_id, num in num_by_source_id.items():
+            score += math.sqrt(num)
+            # score += num / math.sqrt(len(self.by_source_id[source_id]))
+        return int(score)
 
     def __len__(self):
         return sum(len(reacts) for reacts in self.by_target_id.values())
@@ -190,16 +201,19 @@ class Squares(commands.Cog):
     def _user_tally(self, user_id, source_id=None):
         return { color : self._user_tally_color(user_id, color, source_id) for color in Color }
 
-    def _user_score(self, user_tally):
-        return user_tally[Color.GREEN] * 2 + user_tally[Color.YELLOW] * (-1) + user_tally[Color.RED] * (-2)
+    def _user_score(self, user_id):
+        green = self._reacts[Color.GREEN].weighted_squares_received(user_id)
+        yellow = self._reacts[Color.YELLOW].weighted_squares_received(user_id)
+        red = self._reacts[Color.RED].weighted_squares_received(user_id)
+        return 2 * green + (-1) * yellow + (-2) * red
 
     def _user_ids(self):
         return set().union(*(set(self._reacts[color].by_target_id.keys()) for color in Color)).difference(IGNORED_USER_IDS)
 
     # A list of users and their tallies, ordered by decreasing score
     async def _summary(self):
-        summary = [ (user, self._user_tally(user_id)) for user_id in self._user_ids() if (user := await self._try_fetch_user(user_id)) is not None ]
-        summary.sort(key=lambda user_and_tally: self._user_score(user_and_tally[1]), reverse=True)
+        summary = [ (user, self._user_tally(user_id), self._user_score(user_id)) for user_id in self._user_ids() if (user := await self._try_fetch_user(user_id)) is not None ]
+        summary.sort(key=lambda entry: entry[2], reverse=True)
         return summary
 
     async def _on_reaction_upd(self, ctx, remove=False):
@@ -350,8 +364,8 @@ class Squares(commands.Cog):
 
         MAX_PAGE_LENGTH=240
         rows = [
-            f"{i+1}. {user.name}: {tally[Color.GREEN]}🟩 {tally[Color.YELLOW]}🟨 {tally[Color.RED]}🟥 ({self._user_score(tally)})"
-            for (i, (user, tally)) in enumerate(summary)
+            f"{i+1}. {user.name}: {tally[Color.GREEN]}🟩 {tally[Color.YELLOW]}🟨 {tally[Color.RED]}🟥 ({score})"
+            for (i, (user, tally, score)) in enumerate(summary)
         ]
         embeds = []
         i = 0
