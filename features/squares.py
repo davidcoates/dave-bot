@@ -31,8 +31,6 @@ class Color(Enum):
 SQUARE_TO_COLOR = { "🟥" : Color.RED, "🟨" : Color.YELLOW, "🟩" : Color.GREEN }
 COLOR_TO_SQUARE = { Color.RED : "🟥", Color.YELLOW : "🟨", Color.GREEN : "🟩" }
 
-IGNORED_USER_IDS = { 306917480432140301 }
-
 @dataclass
 class React:
     message_id: int
@@ -208,7 +206,7 @@ class Squares(commands.Cog):
         return 2 * green + (-1) * yellow + (-2) * red
 
     def _user_ids(self):
-        return set().union(*(set(self._reacts[color].by_target_id.keys()) for color in Color)).difference(IGNORED_USER_IDS)
+        return set().union(*(set(self._reacts[color].by_target_id.keys()) for color in Color))
 
     # A list of users and their tallies, ordered by decreasing score
     async def _summary(self):
