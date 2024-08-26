@@ -356,7 +356,7 @@ class Squares(commands.Cog):
 
         MAX_PAGE_LENGTH=240
         rows = [
-            f"{i+1}. {user.name}: {tally[Color.GREEN]}🟩 {tally[Color.YELLOW]}🟨 {tally[Color.RED]}🟥"
+            f"{i+1}. {user.name}: {tally[Color.GREEN]}🟩 {tally[Color.YELLOW]}🟨 {tally[Color.RED]}🟥 ({self._user_score(tally)})"
             for (i, (user, tally)) in enumerate(summary)
         ]
         embeds = []
