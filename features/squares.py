@@ -281,7 +281,7 @@ class Squares(commands.Cog):
         await ctx.send(embed=embed)
 
     async def _try_fetch_user(self, user_id):
-        if user_id is None or user_id in IGNORED_USER_IDS:
+        if user_id is None:
             return None
         if user_id in self._users_by_id:
             return self._users_by_id[user_id]
