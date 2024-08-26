@@ -317,7 +317,12 @@ class Squares(commands.Cog):
         return message
 
     async def _top(self, ctx, color, author_filter):
-        messages = [ (message_id, len(reacts)) for message_id, reacts in self._reacts[color].by_message_id.items() ]
+        messages = [
+            (message_id, len(reacts))
+            for message_id, reacts in self._reacts[color].by_message_id.items()
+            if len(reacts) > 0
+            if (author_filter is None or next(iter(reacts)).target_id == author_filter.id)
+        ]
         messages = sorted(messages, key=lambda p:p[1], reverse=True)
         embed = discord.Embed(
             title=f"Top {color.name.title()} Squared Messages"
@@ -331,8 +336,6 @@ class Squares(commands.Cog):
             author = await self._try_fetch_user(message.author_id)
             if author is None:
                 continue
-            if author_filter is not None and author != author_filter:
-                continue
             square = COLOR_TO_SQUARE[color]
             embed.add_field(name=f"{react_count} {square} {author.name}", value=f"{message.jump_url}", inline=False)
             i += 1
@@ -343,14 +346,17 @@ class Squares(commands.Cog):
 
     @commands.hybrid_command()
     async def topred(self, ctx, author: discord.Member = None):
+        await ctx.defer()
         await self._top(ctx, Color.RED, author)
 
     @commands.hybrid_command()
     async def topyellow(self, ctx, author: discord.Member = None):
+        await ctx.defer()
         await self._top(ctx, Color.YELLOW, author)
 
     @commands.hybrid_command()
     async def topgreen(self, ctx, author: discord.Member = None):
+        await ctx.defer()
         await self._top(ctx, Color.GREEN, author)
 
     @commands.hybrid_command()
