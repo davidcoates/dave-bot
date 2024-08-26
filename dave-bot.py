@@ -24,6 +24,8 @@ async def setup_hook():
     for feature in FEATURES:
         logging.info(f"load feature({feature})")
         await bot.load_extension(feature)
+#    cmds = await bot.tree.sync()
+#    logging.info(f"synced {len(cmds)} command(s)")
 
 log_handler = logging.getLogger().handlers[0]
 bot.run(token, log_handler=log_handler)

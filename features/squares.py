@@ -272,7 +272,7 @@ class Squares(commands.Cog):
     async def on_raw_reaction_remove(self, ctx):
         await self._on_reaction_upd(ctx, remove=True)
 
-    @commands.command()
+    @commands.hybrid_command()
     async def info(self, ctx):
         embed = discord.Embed(
             title="Squares",
@@ -316,7 +316,7 @@ class Squares(commands.Cog):
         self._save_message_cache()
         return message
 
-    async def _top(self, ctx, color):
+    async def _top(self, ctx, color, author_filter):
         messages = [ (message_id, len(reacts)) for message_id, reacts in self._reacts[color].by_message_id.items() ]
         messages = sorted(messages, key=lambda p:p[1], reverse=True)
         embed = discord.Embed(
@@ -328,30 +328,32 @@ class Squares(commands.Cog):
             message = await self._fetch_cached_message(ctx, message_id)
             if message is None:
                 continue
-            user = await self._try_fetch_user(message.author_id)
-            if user is None:
+            author = await self._try_fetch_user(message.author_id)
+            if author is None:
+                continue
+            if author_filter is not None and author != author_filter:
                 continue
             square = COLOR_TO_SQUARE[color]
-            embed.add_field(name=f"{react_count} {square} {user.name}", value=f"{message.jump_url}", inline=False)
+            embed.add_field(name=f"{react_count} {square} {author.name}", value=f"{message.jump_url}", inline=False)
             i += 1
             if i >= 5:
                 break
         await ctx.send(embed=embed)
 
 
-    @commands.command()
-    async def topred(self, ctx):
-        await self._top(ctx, Color.RED)
+    @commands.hybrid_command()
+    async def topred(self, ctx, author: discord.Member = None):
+        await self._top(ctx, Color.RED, author)
 
-    @commands.command()
-    async def topyellow(self, ctx):
-        await self._top(ctx, Color.YELLOW)
+    @commands.hybrid_command()
+    async def topyellow(self, ctx, author: discord.Member = None):
+        await self._top(ctx, Color.YELLOW, author)
 
-    @commands.command()
-    async def topgreen(self, ctx):
-        await self._top(ctx, Color.GREEN)
+    @commands.hybrid_command()
+    async def topgreen(self, ctx, author: discord.Member = None):
+        await self._top(ctx, Color.GREEN, author)
 
-    @commands.command()
+    @commands.hybrid_command()
     async def squares(self, ctx):
         summary = await self._summary()
         if not summary:
