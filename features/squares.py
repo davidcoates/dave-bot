@@ -215,6 +215,20 @@ class Squares(commands.Cog):
         return summary
 
     async def _sync_message(self, message):
+
+        # remove any duplicates
+        for color in Color:
+            reacts_by_source_id = defaultdict(list)
+            for react in self._reacts[color].by_message_id[message.id]:
+                reacts_by_source_id[react.source_id].append(react)
+            for source_id, reacts in reacts_by_source_id.items():
+                reacts.sort(key = lambda react: react.timestamp or datetime.min)
+                while len(reacts) > 1:
+                    react = reacts.pop(0)
+                    logging.info(f"remove duplicate {color} react by user({source_id})")
+                    self._reacts[color].remove(react)
+
+        # sync actual & recorded
         for reaction in message.reactions:
             if not isinstance(reaction.emoji, str):
                 continue
@@ -232,6 +246,7 @@ class Squares(commands.Cog):
             for react in reacts_to_remove:
                 logging.info(f"remove phantom {color} react by user({react.source_id}) on message({message.id})")
                 self._reacts[color].remove(react)
+
 
     async def _is_valid_reactor_for_message(self, reactor_id, message):
         if message.author.id == reactor_id:
@@ -444,8 +459,8 @@ class Squares(commands.Cog):
 #        await self._refresh_squareboard_historical(ctx)
 
     def _squareboard_score(self, message_id):
-        unique_squarers = { react.source_id for color in Color for react in self._reacts[color].by_message_id.get(message_id, []) }
-        return len(unique_squarers)
+        unique_reactors = { react.source_id for color in Color for react in self._reacts[color].by_message_id.get(message_id, []) }
+        return len(unique_reactors)
 
     async def _refresh_squareboard_historical(self, ctx):
 
