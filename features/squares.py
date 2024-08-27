@@ -36,7 +36,7 @@ class React:
     message_id: int
     target_id: int # The author of the message
     source_id: int # The person who reacted
-    timestamp: Optional[datetime] # The time of the reaction
+    timestamp: datetime # The time of the reaction
 
     def _id(self):
         return (self.message_id, self_target_id, self.source_id)
@@ -237,17 +237,6 @@ class Squares(commands.Cog):
     async def _sync_message(self, message, timestamp) -> Transaction:
         transaction = Transaction()
         # Note: this is a fix for a past bug and should no longer be necessary!
-        for color in Color:
-            reacts_by_source_id = defaultdict(list)
-            for react in self._reacts[color].by_message_id[message.id]:
-                reacts_by_source_id[react.source_id].append(react)
-            for source_id, reacts in reacts_by_source_id.items():
-                reacts.sort(key = lambda react: react.timestamp or datetime.min)
-                while len(reacts) > 1:
-                    react = reacts.pop(0)
-                    logging.info(f"remove duplicate {color} react by user({source_id})")
-                    transaction.remove(color, react)
-        # sync actual & recorded
         for reaction in message.reactions:
             if not isinstance(reaction.emoji, str):
                 continue
