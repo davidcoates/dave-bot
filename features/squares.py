@@ -233,21 +233,20 @@ class Squares(commands.Cog):
             return True
         transaction = Transaction()
         for color in Color:
-            actual_source_ids = set()
+            desired_source_ids = set()
             for reaction in message.reactions:
-                if not isinstance(reaction.emoji, str) or reaction.emoji != COLOR_TO_SQUARE[color]:
-                    continue
-                async for source in reaction.users():
-                    if source_is_valid(source):
-                        actual_source_ids.add(source.id)
-                break
-            recorded_source_ids = { react.source_id for react in self._reacts[color].by_message_id[message.id] }
-            for source_id in actual_source_ids:
-                if source_id not in recorded_source_ids:
+                if isinstance(reaction.emoji, str) and reaction.emoji == COLOR_TO_SQUARE[color]:
+                    async for source in reaction.users():
+                        if source_is_valid(source):
+                            desired_source_ids.add(source.id)
+                    break
+            current_source_ids = { react.source_id for react in self._reacts[color].by_message_id[message.id] }
+            for source_id in desired_source_ids:
+                if source_id not in current_source_ids:
                     react = React(message.id, message.author.id, source_id, timestamp)
                     transaction.add(color, react)
             for react in self._reacts[color].by_message_id[message.id]:
-                if react.source_id not in actual_source_ids:
+                if react.source_id not in desired_source_ids:
                     transaction.remove(color, react)
         return transaction
 
