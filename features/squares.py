@@ -224,27 +224,22 @@ class Squares(commands.Cog):
         summary.sort(key=lambda entry: entry[2], reverse=True)
         return summary
 
-    async def _is_valid_reactor_for_message(self, reactor_id, message):
-        if message.author.id == reactor_id:
-            return False
-        reactor = await self._try_fetch_user(reactor_id)
-        if reactor is None:
-            return False
-        if reactor.bot and reactor_id != self._bot.user_id:
-            return False
-        return True
-
     async def _sync_message(self, message, timestamp) -> Transaction:
+        def source_is_valid(source):
+            if message.author.id == source.id:
+                return False # don't count self reacts
+            if source.bot and source.id != self._bot.user_id:
+                return False # don't count bots (except us)
+            return True
         transaction = Transaction()
-        # Note: this is a fix for a past bug and should no longer be necessary!
         for color in Color:
             actual_source_ids = set()
             for reaction in message.reactions:
                 if not isinstance(reaction.emoji, str) or reaction.emoji != COLOR_TO_SQUARE[color]:
                     continue
-                async for user in reaction.users():
-                    if await self._is_valid_reactor_for_message(user.id, message):
-                        actual_source_ids.add(user.id)
+                async for source in reaction.users():
+                    if source_is_valid(source):
+                        actual_source_ids.add(source.id)
                 break
             recorded_source_ids = { react.source_id for react in self._reacts[color].by_message_id[message.id] }
             for source_id in actual_source_ids:
@@ -263,7 +258,7 @@ class Squares(commands.Cog):
         channel = await self._bot.fetch_channel(ctx.channel_id)
         message = await self._fetch_message(channel, ctx.message_id)
         if await self._try_fetch_user(message.author.id) is None:
-            logging.info(f"ignore {color} react on non-user({message.author.id})")
+            logging.info(f"ignore {color} react on unknown user({message.author.id})")
             return
         transaction = await self._sync_message(message, datetime.now())
         if transaction:
@@ -442,8 +437,8 @@ class Squares(commands.Cog):
 #        await self._refresh_squareboard_historical(ctx)
 
     def _squareboard_score(self, message_id):
-        unique_reactors = { react.source_id for color in Color for react in self._reacts[color].by_message_id.get(message_id, []) }
-        return len(unique_reactors)
+        source_ids = { react.source_id for color in Color for react in self._reacts[color].by_message_id.get(message_id, []) }
+        return len(source_ids)
 
     async def _refresh_squareboard_historical(self, ctx):
 
