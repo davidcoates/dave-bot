@@ -234,14 +234,6 @@ class Squares(commands.Cog):
             return False
         return True
 
-    async def _find_reaction(self, message, color):
-        for reaction in message.reactions:
-            if not isinstance(reaction.emoji, str):
-                continue
-            if reaction.emoji == COLOR_TO_SQUARE[color]:
-                return reaction
-        return None
-
     async def _sync_message(self, message, timestamp) -> Transaction:
         transaction = Transaction()
         # Note: this is a fix for a past bug and should no longer be necessary!
@@ -250,7 +242,9 @@ class Squares(commands.Cog):
             for reaction in message.reactions:
                 if not isinstance(reaction.emoji, str) or reaction.emoji != COLOR_TO_SQUARE[color]:
                     continue
-                actual_source_ids = { user.id async for user in reaction.users() if await self._is_valid_reactor_for_message(user.id, message) }
+                async for user in reaction.users():
+                    if await self._is_valid_reactor_for_message(user.id, message):
+                        actual_source_ids.add(user.id)
                 break
             recorded_source_ids = { react.source_id for react in self._reacts[color].by_message_id[message.id] }
             for source_id in actual_source_ids:
