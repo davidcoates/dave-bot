@@ -22,6 +22,7 @@ RED_DESCRIPTION = "🟥 Red is the level on which the child is engaging in sever
 DESCRIPTION = GREEN_DESCRIPTION + "\n\n" + YELLOW_DESCRIPTION + "\n\n" + RED_DESCRIPTION + "\n\n"
 
 SQUAREBOARD_THRESHOLD = 6
+SQUAREBOARD_CHANNEL_NAME = "squareboard"
 
 class Color(Enum):
     GREEN = 0
@@ -213,14 +214,18 @@ class Squares(commands.Cog):
         green = self._reacts[Color.GREEN].weighted_squares_received(user_id)
         yellow = self._reacts[Color.YELLOW].weighted_squares_received(user_id)
         red = self._reacts[Color.RED].weighted_squares_received(user_id)
-        return 2 * green + (-1) * yellow + (-2) * red
+        return (+2) * green + (-1) * yellow + (-2) * red
 
     def _user_ids(self):
         return set().union(*(set(self._reacts[color].by_target_id.keys()) for color in Color))
 
     # A list of users and their tallies, ordered by decreasing score
     async def _summary(self):
-        summary = [ (user, self._user_tally(user_id), self._user_score(user_id)) for user_id in self._user_ids() if (user := await self._try_fetch_user(user_id)) is not None ]
+        summary = [
+            (user, self._user_tally(user_id), self._user_score(user_id))
+            for user_id in self._user_ids()
+            if (user := await self._try_fetch_user(user_id)) is not None
+        ]
         summary.sort(key=lambda entry: entry[2], reverse=True)
         return summary
 
@@ -344,6 +349,7 @@ class Squares(commands.Cog):
             title=f"Top {color.name.title()} Squared Messages"
         )
         table = ""
+        MAX_ENTRIES = 8 # hard limit is 25 but that's too slow
         i = 0
         for (message_id, react_count) in messages:
             message = await self._fetch_cached_message(ctx, message_id)
@@ -355,10 +361,9 @@ class Squares(commands.Cog):
             square = COLOR_TO_SQUARE[color]
             embed.add_field(name=f"{react_count} {square} {author.name}", value=f"{message.jump_url}", inline=False)
             i += 1
-            if i >= 5:
+            if i >= MAX_ENTRIES:
                 break
         await ctx.send(embed=embed)
-
 
     @commands.hybrid_command()
     async def topred(self, ctx, author: discord.Member = None):
@@ -381,14 +386,11 @@ class Squares(commands.Cog):
         if not summary:
             await self._error(ctx, "No users found.")
             return
-
-        description = "All-ime user behaviour statistics."
-
-        MAX_PAGE_LENGTH=240
         rows = [
             f"{i+1}. {user.name}: {tally[Color.GREEN]}🟩 {tally[Color.YELLOW]}🟨 {tally[Color.RED]}🟥 ({score})"
             for (i, (user, tally, score)) in enumerate(summary)
         ]
+        MAX_PAGE_LENGTH = 255 - 2*len("```")
         embeds = []
         i = 0
         while i < len(rows):
@@ -401,17 +403,15 @@ class Squares(commands.Cog):
             assert len(page) <= MAX_PAGE_LENGTH
             embed = discord.Embed(
                 title="Squares",
-                description=description
+                description="All-time user behaviour statistics."
             )
             embed.add_field(name="```"+page+"```", value="", inline=False)
             embeds.append(embed)
-
         if len(embeds) > 1:
             await Paginator.Simple().start(ctx, pages=embeds)
         else:
-            assert(len(embeds) == 1)
-            await ctx.send(embed=embeds[0])
-
+            [ embed ] = embeds
+            await ctx.send(embed=embed)
 
     def _format_squareboard_entry(self, message, tally):
         content = ' '.join([ str(tally[color]) + " " + COLOR_TO_SQUARE[color] for color in Color if tally[color] > 0 ])
@@ -430,52 +430,18 @@ class Squares(commands.Cog):
         embed.add_field(name="Original", value=f"[Jump!]({message.jump_url})", inline=False)
         return content, embed
 
-
-#    @commands.command()
-#    async def refresh(self, ctx):
-#        await self._refresh_squareboard_historical(ctx)
-
     def _squareboard_score(self, message_id):
         source_ids = { react.source_id for color in Color for react in self._reacts[color].by_message_id.get(message_id, []) }
         return len(source_ids)
 
-    async def _refresh_squareboard_historical(self, ctx):
-
-        logging.info("refreshing squareboard (this may take a while)")
-
-        message_ids_to_refresh = set()
-
-        # add all messages with more than the threshold number of squares
-        all_message_ids = set(message_id for color in Color for message_id in self._reacts[color].by_message_id)
-        message_ids_to_refresh.update(message_id for message_id in all_message_ids if self._squareboard_score(message_id) >= SQUAREBOARD_THRESHOLD)
-
-        # add all messages already on the squareboard (we may need to amend / delete)
-        message_ids_to_refresh.update(self._squareboard_entries_by_id.keys())
-
-        for message_id in message_ids_to_refresh:
-            cached_message = await self._fetch_cached_message(ctx, message_id)
-            if cached_message is None:
-                continue
-            channel = await self._bot.fetch_channel(cached_message.channel_id)
-            message = await self._fetch_message(channel, message_id)
-            await self._refresh_squareboard_for_message(message)
-
-        logging.info("squareboard refreshed")
-
-
     async def _refresh_squareboard_for_message(self, message):
-
         if self._squareboard_channel is None:
-            assert len(self._bot.guilds) == 1
-            guild = self._bot.guilds[0]
-            [ self._squareboard_channel ] = [ channel for channel in guild.text_channels if channel.name == "squareboard" ]
-
+            [ guild ] = self._bot.guilds
+            [ self._squareboard_channel ] = [ channel for channel in guild.text_channels if channel.name == SQUAREBOARD_CHANNEL_NAME ]
         tally = self._message_tally(message.id)
         score = self._squareboard_score(message.id)
-
         squareboard_entry = self._squareboard_entries_by_id.get(message.id)
         upd = False
-
         if squareboard_entry is None:
             if score >= SQUAREBOARD_THRESHOLD:
                 # insert
@@ -500,10 +466,8 @@ class Squares(commands.Cog):
                 await squareboard_message.edit(content=content, embed=embed)
                 self._squareboard_entries_by_id[message.id].tally = tally
                 upd = True
-
         if upd:
             self._save_squareboard()
-            pass
 
     def _push_influx_react(self, source, target):
         tally = self._user_tally(target.id)
