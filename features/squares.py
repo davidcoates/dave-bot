@@ -366,17 +366,17 @@ class Squares(commands.Cog):
         await ctx.send(embed=embed)
 
     @commands.hybrid_command()
-    async def topred(self, ctx, author: discord.Member = None):
+    async def topred(self, ctx, author: discord.User = None):
         await ctx.defer()
         await self._top(ctx, Color.RED, author)
 
     @commands.hybrid_command()
-    async def topyellow(self, ctx, author: discord.Member = None):
+    async def topyellow(self, ctx, author: discord.User = None):
         await ctx.defer()
         await self._top(ctx, Color.YELLOW, author)
 
     @commands.hybrid_command()
-    async def topgreen(self, ctx, author: discord.Member = None):
+    async def topgreen(self, ctx, author: discord.User = None):
         await ctx.defer()
         await self._top(ctx, Color.GREEN, author)
 
