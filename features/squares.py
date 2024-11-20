@@ -88,7 +88,7 @@ class Reacts:
         return sum(len(reacts) for reacts in self.by_target_id.values())
 
 
-class Transaction:
+class ReactUpdates:
 
     def __init__(self):
         self.adds = []
@@ -109,23 +109,21 @@ class Transaction:
 
 @dataclass
 class Message:
-    message_id: int
+    id: int
     channel_id: int
     author_id: int
-    jump_url: str
+    original_content: str
 
-    def __init__(self, message):
-        self.message_id = message.id
-        self.channel_id = message.channel.id
-        self.author_id = message.author.id
-        self.jump_url = message.jump_url
-
+    def __init__(self, discord_message: discord.Message):
+        self.id = discord_message.id
+        self.channel_id = discord_message.channel.id
+        self.author_id = discord_message.author.id
+        self.original_content = discord_message.content
 
 @dataclass
 class SquareboardEntry:
     squareboard_message_id: int
     tally: Dict[Color, int]
-
 
 class Squares(commands.Cog):
 
@@ -229,61 +227,74 @@ class Squares(commands.Cog):
         summary.sort(key=lambda entry: entry[2], reverse=True)
         return summary
 
-    async def _sync_message(self, message, timestamp) -> Transaction:
+    async def _calculate_react_updates(self, discord_message, timestamp) -> ReactUpdates:
         def source_is_valid(source):
-            if message.author.id == source.id:
+            if discord_message.author.id == source.id:
                 return False # don't count self reacts
             if source.bot and source.id != self._bot.user_id:
                 return False # don't count bots (except us)
             return True
-        transaction = Transaction()
+        react_updates = ReactUpdates()
         for color in Color:
             desired_source_ids = set()
-            for reaction in message.reactions:
+            for reaction in discord_message.reactions:
                 if isinstance(reaction.emoji, str) and reaction.emoji == COLOR_TO_SQUARE[color]:
                     async for source in reaction.users():
                         if source_is_valid(source):
                             desired_source_ids.add(source.id)
                     break
-            current_source_ids = { react.source_id for react in self._reacts[color].by_message_id[message.id] }
+            current_source_ids = { react.source_id for react in self._reacts[color].by_message_id[discord_message.id] }
             for source_id in desired_source_ids:
                 if source_id not in current_source_ids:
-                    react = React(message.id, message.author.id, source_id, timestamp)
-                    transaction.add(color, react)
-            for react in self._reacts[color].by_message_id[message.id]:
+                    react = React(discord_message.id, discord_message.author.id, source_id, timestamp)
+                    react_updates.add(color, react)
+            for react in self._reacts[color].by_message_id[discord_message.id]:
                 if react.source_id not in desired_source_ids:
-                    transaction.remove(color, react)
-        return transaction
+                    react_updates.remove(color, react)
+        return react_updates
 
-    async def _on_reaction_upd(self, ctx, remove=False):
+    async def _on_reaction_upd(self, ctx):
         color = SQUARE_TO_COLOR.get(ctx.emoji.name)
         if color is None: # ignore non-square reacts
             return
         channel = await self._bot.fetch_channel(ctx.channel_id)
-        message = await self._fetch_message(channel, ctx.message_id)
-        if await self._try_fetch_user(message.author.id) is None:
-            logging.info(f"ignore {color} react on unknown user({message.author.id})")
+        discord_message = await channel.fetch_message(ctx.message_id)
+        if await self._try_fetch_user(discord_message.author.id) is None:
+            logging.info(f"ignore {color} react on unknown user({discord_message.author.id})")
             return
-        transaction = await self._sync_message(message, datetime.now())
-        if transaction:
-            await self._commit(transaction)
-            await self._refresh_squareboard_for_message(message)
+        react_updates = await self._calculate_react_updates(discord_message, datetime.now())
+        if react_updates:
+            await self._commit(discord_message, react_updates)
 
-    async def _commit(self, transaction):
+    async def _commit(self, discord_message, react_updates):
+        # 1. update react state
         # hack: push to influx both before and after for differences to always be accurate
         async def push_influx():
-            for (source_id, target_id) in transaction.user_pairs:
+            for (source_id, target_id) in react_updates.user_pairs:
                 source = await self._try_fetch_user(source_id)
                 target = await self._try_fetch_user(target_id)
                 assert source is not None and target is not None
                 self._push_influx_react(source, target)
         await push_influx()
-        for (color, react) in transaction.adds:
+        for (color, react) in react_updates.adds:
             self._reacts[color].add(react)
-        for (color, react) in transaction.removes:
+        for (color, react) in react_updates.removes:
             self._reacts[color].remove(react)
         await push_influx()
         self._save_reacts()
+        # 2. update message state
+        # enforce invariant: message exists in cache iff at least one square react is observed
+        tally = self._message_tally(discord_message.id)
+        if any(tally[color] for color in Color):
+            if discord_message.id not in self._messages_by_id:
+                self._messages_by_id[discord_message.id] = Message(discord_message)
+                self._save_message_cache()
+        else:
+            if discord_message.id in self._messages_by_id:
+                del self._messages_by_id[discord_message.id]
+                self._save_message_cache()
+        # 3. update squareboard
+        await self._refresh_squareboard_for_message_id(discord_message.id)
 
     @commands.Cog.listener()
     async def on_raw_reaction_add(self, ctx):
@@ -291,7 +302,7 @@ class Squares(commands.Cog):
 
     @commands.Cog.listener()
     async def on_raw_reaction_remove(self, ctx):
-        await self._on_reaction_upd(ctx, remove=True)
+        await self._on_reaction_upd(ctx)
 
     @commands.hybrid_command()
     async def info(self, ctx):
@@ -301,7 +312,7 @@ class Squares(commands.Cog):
         )
         await ctx.send(embed=embed)
 
-    async def _try_fetch_user(self, user_id):
+    async def _try_fetch_user(self, user_id) -> Optional[discord.User]:
         if user_id is None:
             return None
         if user_id in self._users_by_id:
@@ -310,60 +321,47 @@ class Squares(commands.Cog):
         try:
             user = await self._bot.fetch_user(user_id)
         except discord.errors.NotFound:
-            logging.debug(f"failed to fetch user({user_id})")
+            logging.debug("user(%d) not found", user_id)
         self._users_by_id[user_id] = user
         return user
 
-    async def _fetch_message(self, channel, message_id):
-        message = await channel.fetch_message(message_id)
+    async def _fetch_discord_message(self, channel, message_id) -> discord.Message:
+        discord_message = await channel.fetch_message(message_id)
         if message_id not in self._messages_by_id:
-            self._messages_by_id[message_id] = Message(message)
-            self._save_message_cache()
-        return message
+            self._messages_by_id[message_id] = Message(discord_message)
+        return discord_message
 
-    async def _fetch_cached_message(self, ctx, message_id) -> Optional[Message]:
-        if message_id in self._messages_by_id:
-            return self._messages_by_id[message_id]
-        message = None
-        for channel in ctx.guild.text_channels:
-            try:
-                message = Message(await channel.fetch_message(message_id))
-                break
-            except discord.errors.NotFound:
-                continue
-        if message is None:
-            logging.error("message(%d) not found", message_id)
-        self._messages_by_id[message_id] = message
-        self._save_message_cache()
-        return message
+    async def _try_fetch_discord_message(self, message: Message) -> Optional[discord.Message]:
+        try:
+            channel = await self._bot.fetch_channel(message.channel_id)
+            discord_message = await channel.fetch_message(message.id)
+        except discord.errors.NotFound:
+            discord_message = None
+        return discord_message
 
     async def _top(self, ctx, color, author_filter):
-        messages = [
+        message_ids_and_counts = [
             (message_id, len(reacts))
             for message_id, reacts in self._reacts[color].by_message_id.items()
             if len(reacts) > 0
             if (author_filter is None or next(iter(reacts)).target_id == author_filter.id)
         ]
-        messages = sorted(messages, key=lambda p:p[1], reverse=True)
-        embed = discord.Embed(
-            title=f"Top {color.name.title()} Squared Messages"
-        )
-        table = ""
-        MAX_ENTRIES = 8 # hard limit is 25 but that's too slow
-        i = 0
-        for (message_id, react_count) in messages:
-            message = await self._fetch_cached_message(ctx, message_id)
+        message_ids = map(lambda p:p[0], sorted(message_ids_and_counts, key=lambda p:p[1], reverse=True))
+        MAX_ENTRIES = 10
+        embeds = []
+        for message_id in message_ids:
+            message = self._messages_by_id.get(message_id)
             if message is None:
                 continue
-            author = await self._try_fetch_user(message.author_id)
-            if author is None:
-                continue
-            square = COLOR_TO_SQUARE[color]
-            embed.add_field(name=f"{react_count} {square} {author.name}", value=f"{message.jump_url}", inline=False)
-            i += 1
-            if i >= MAX_ENTRIES:
+            embed = await self._format_message(message)
+            embeds.append(embed)
+            if len(embeds) >= MAX_ENTRIES:
                 break
-        await ctx.send(embed=embed)
+        if len(embeds) > 1:
+            await Paginator.Simple().start(ctx, pages=embeds)
+        else:
+            [ embed ] = embeds
+            await ctx.send(embed=embed)
 
     @commands.hybrid_command()
     async def topred(self, ctx, author: discord.User = None):
@@ -413,8 +411,8 @@ class Squares(commands.Cog):
             [ embed ] = embeds
             await ctx.send(embed=embed)
 
-    def _format_squareboard_entry(self, message, tally):
-        content = ' '.join([ str(tally[color]) + " " + COLOR_TO_SQUARE[color] for color in Color if tally[color] > 0 ])
+    async def _format_message(self, message: Message) -> discord.Embed:
+        tally = self._message_tally(message.id)
         match max(Color, key=lambda color: tally[color]):
             case Color.RED:
                 embed_color = discord.Colour.red()
@@ -423,48 +421,64 @@ class Squares(commands.Cog):
             case Color.GREEN:
                 embed_color = discord.Colour.green()
         embed = discord.Embed(
-            description = message.content,
+            description = message.original_content,
             colour = embed_color
         )
-        embed.set_author(name=message.author.name, icon_url=(message.author.avatar.url if message.author.avatar is not None else None))
-        embed.add_field(name="Original", value=f"[Jump!]({message.jump_url})", inline=False)
-        return content, embed
+        author = await self._try_fetch_user(message.author_id)
+        if author is None:
+            embed.set_author(name=message.author_id)
+        else:
+            embed.set_author(name=author.name, icon_url=(author.avatar.url if author.avatar is not None else None))
+        tally_str = ' '.join([ str(tally[color]) + " " + COLOR_TO_SQUARE[color] for color in Color if tally[color] > 0 ])
+        embed.add_field(name="Squares", value=tally_str, inline=False)
+        discord_message = await self._try_fetch_discord_message(message)
+        if discord_message is None:
+            embed.add_field(name="Original", value=f"[Deleted]", inline=False)
+        else:
+            if discord_message.attachments:
+                embed.set_thumbnail(url=discord_message.attachments[0].url)
+            embed.add_field(name="Original", value=f"[Jump!]({discord_message.jump_url})", inline=False)
+        return embed
 
     def _squareboard_score(self, message_id):
         source_ids = { react.source_id for color in Color for react in self._reacts[color].by_message_id.get(message_id, []) }
         return len(source_ids)
 
-    async def _refresh_squareboard_for_message(self, message):
+    async def _refresh_squareboard_for_message_id(self, message_id):
         if self._squareboard_channel is None:
             [ guild ] = self._bot.guilds
             [ self._squareboard_channel ] = [ channel for channel in guild.text_channels if channel.name == SQUAREBOARD_CHANNEL_NAME ]
-        tally = self._message_tally(message.id)
-        score = self._squareboard_score(message.id)
-        squareboard_entry = self._squareboard_entries_by_id.get(message.id)
+        tally = self._message_tally(message_id)
+        score = self._squareboard_score(message_id)
+        squareboard_entry = self._squareboard_entries_by_id.get(message_id)
         upd = False
         if squareboard_entry is None:
             if score >= SQUAREBOARD_THRESHOLD:
                 # insert
-                logging.info("squareboard insert message(%s) tally(%s)", message.id, tally)
-                (content, embed) = self._format_squareboard_entry(message, tally)
-                squareboard_message = await self._squareboard_channel.send(content=content, embed=embed)
-                self._squareboard_entries_by_id[message.id] = SquareboardEntry(squareboard_message.id, tally)
+                logging.info("squareboard insert message(%s) tally(%s)", message_id, tally)
+                message = self._messages_by_id[message_id]
+                embed = await self._format_message(message)
+                squareboard_message = await self._squareboard_channel.send(embed=embed)
+                self._squareboard_entries_by_id[message_id] = SquareboardEntry(squareboard_message.id, tally)
                 upd = True
         else:
             if score < SQUAREBOARD_THRESHOLD:
                 # delete
-                logging.info("squareboard delete message(%s) tally(%s)", message.id, tally)
-                squareboard_message = await self._fetch_message(self._squareboard_channel, squareboard_entry.squareboard_message_id)
+                logging.info("squareboard delete message(%s) tally(%s)", message_id, tally)
+                squareboard_message = await self._squareboard_channel.fetch_message(squareboard_entry.squareboard_message_id)
+                assert squareboard_message is not None
                 await squareboard_message.delete()
-                del self._squareboard_entries_by_id[message.id]
+                del self._squareboard_entries_by_id[message_id]
                 upd = True
             elif tally != squareboard_entry.tally:
                 # amend
-                logging.info("squareboard amend message(%s) tally(%s)", message.id, tally)
-                squareboard_message = await self._fetch_message(self._squareboard_channel, squareboard_entry.squareboard_message_id)
-                (content, embed) = self._format_squareboard_entry(message, tally)
-                await squareboard_message.edit(content=content, embed=embed)
-                self._squareboard_entries_by_id[message.id].tally = tally
+                logging.info("squareboard amend message(%s) tally(%s)", message_id, tally)
+                squareboard_message = await self._squareboard_channel.fetch_message(squareboard_entry.squareboard_message_id)
+                assert squareboard_message is not None
+                message = self._messages_by_id[message_id]
+                embed = await self._format_message(message)
+                await squareboard_message.edit(embed=embed)
+                self._squareboard_entries_by_id[message_id].tally = tally
                 upd = True
         if upd:
             self._save_squareboard()
