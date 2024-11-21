@@ -1,3 +1,4 @@
+import abc
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime
@@ -21,7 +22,7 @@ RED_DESCRIPTION = "🟥 Red is the level on which the child is engaging in sever
 
 DESCRIPTION = GREEN_DESCRIPTION + "\n\n" + YELLOW_DESCRIPTION + "\n\n" + RED_DESCRIPTION + "\n\n"
 
-SQUAREBOARD_THRESHOLD = 6
+SQUAREBOARD_SCORE_THRESHOLD = 6
 SQUAREBOARD_CHANNEL_NAME = "squareboard"
 
 class Color(Enum):
@@ -74,7 +75,7 @@ class Reacts:
         self.by_target_id[react.target_id].discard(react)
         self.by_source_id[react.source_id].discard(react)
 
-    def weighted_squares_received(self, target_id) -> int:
+    def calculate_weighted_squares_on_user(self, target_id) -> int:
         num_by_source_id = defaultdict(int)
         for react in self.by_target_id[target_id]:
             num_by_source_id[react.source_id] += 1
@@ -83,6 +84,12 @@ class Reacts:
             score += math.sqrt(num)
             # score += num / math.sqrt(len(self.by_source_id[source_id]))
         return int(score)
+
+    def calculate_tally_on_user(self, user_id, source_id=None):
+        reacts = self.by_target_id.get(user_id, [])
+        if source_id is not None:
+            reacts = [ react for react in reacts if react.source_id == source_id ]
+        return len(reacts)
 
     def __len__(self):
         return sum(len(reacts) for reacts in self.by_target_id.values())
@@ -118,6 +125,22 @@ class ReactsDB:
         for (color, react) in react_updates.removes:
             self._reacts_by_color[color].remove(react)
         self._save()
+
+    def calculate_tally_on_message(self, message_id):
+        return { color : len(self._reacts_by_color[color].by_message_id.get(message_id, [])) for color in Color }
+
+    def calculate_tally_on_user(self, user_id, source_id=None):
+        return { color : self._reacts_by_color[color].calculate_tally_on_user(user_id, source_id) for color in Color }
+
+    def calculate_unique_squarers_on_message(self, message_id):
+        source_ids = { react.source_id for color in Color for react in self._reacts_by_color[color].by_message_id.get(message_id, []) }
+        return len(source_ids)
+
+    def calculate_weighted_squares_on_user(self, user_id):
+        green  = self._reacts_by_color[Color.GREEN ].calculate_weighted_squares_on_user(user_id)
+        yellow = self._reacts_by_color[Color.YELLOW].calculate_weighted_squares_on_user(user_id)
+        red    = self._reacts_by_color[Color.RED   ].calculate_weighted_squares_on_user(user_id)
+        return (+2) * green + (-1) * yellow + (-2) * red
 
     def __getitem__(self, color) -> Reacts:
         return self._reacts_by_color[color]
@@ -193,19 +216,97 @@ class MessagesDB:
             pickle.dump(self._messages_by_id, f)
 
 
+class MessageFormatter(metaclass=abc.ABCMeta):
+
+    async def format_message(self, message: Message) -> discord.Embed:
+        return await self._format_message(message)
+
+    @abc.abstractmethod
+    async def _format_message(self, message: Message) -> discord.Embed:
+        raise NotImplementedError()
+
+
 @dataclass
 class SquareboardEntry:
     squareboard_message_id: int
     tally: Dict[Color, int]
 
-class Squares(commands.Cog):
+
+class Squareboard:
+
+    def __init__(self, channel_name, reacts: ReactsDB, messages: MessagesDB, formatter: MessageFormatter):
+        self._channel_name = channel_name
+        self._filename = "squareboard.data" if channel_name == "squareboard" else f"squareboard-{channel_name}.data"
+        self._channel = None
+        self._reacts = reacts
+        self._messages = messages
+        self._formatter = formatter
+        self._load()
+
+    async def refresh_message(self, bot, message_id):
+        if self._channel is None:
+            [ guild ] = bot.guilds
+            [ self._channel ] = [ channel for channel in guild.text_channels if channel.name == self._channel_name ]
+        tally = self._reacts.calculate_tally_on_message(message_id)
+        score = self._reacts.calculate_unique_squarers_on_message(message_id)
+        entry = self._entries_by_id.get(message_id)
+        upd = False
+        if entry is None:
+            if score >= SQUAREBOARD_SCORE_THRESHOLD:
+                # insert
+                logging.info("squareboard insert message(%s) tally(%s)", message_id, tally)
+                message = self._messages[message_id]
+                embed = await self._formatter.format_message(message)
+                squareboard_message = await self._channel.send(embed=embed)
+                self._entries_by_id[message_id] = SquareboardEntry(squareboard_message.id, tally)
+                upd = True
+        else:
+            if score < SQUAREBOARD_SCORE_THRESHOLD:
+                # delete
+                logging.info("squareboard delete message(%s) tally(%s)", message_id, tally)
+                squareboard_message = await self._channel.fetch_message(entry.squareboard_message_id)
+                assert squareboard_message is not None
+                await squareboard_message.delete()
+                del self._entries_by_id[message_id]
+                upd = True
+            elif tally != entry.tally:
+                # amend
+                logging.info("squareboard amend message(%s) tally(%s)", message_id, tally)
+                squareboard_message = await self._channel.fetch_message(entry.squareboard_message_id)
+                assert squareboard_message is not None
+                message = self._messages[message_id]
+                embed = await self._formatter.format_message(message)
+                await squareboard_message.edit(embed=embed)
+                self._entries_by_id[message_id].tally = tally
+                upd = True
+        if upd:
+            self._save()
+
+    def _load(self):
+        logging.info("load squareboard(%s)", self._channel_name)
+        try:
+            with open(self._filename, 'rb') as f:
+                self._entries_by_id = pickle.load(f)
+        except FileNotFoundError:
+            self._entries_by_id = dict()
+
+    def _save(self):
+        logging.info("save squareboard(%s)", self._channel_name)
+        with open(self._filename, 'wb') as f:
+            pickle.dump(self._entries_by_id, f)
+
+
+
+class CogABCMeta(commands.CogMeta, abc.ABCMeta):
+    pass
+
+class Squares(MessageFormatter, commands.Cog, metaclass=CogABCMeta):
 
     def __init__(self, bot):
         self._bot = bot
         self._reacts = ReactsDB()
         self._messages = MessagesDB()
-        self._load_squareboard()
-        self._squareboard_channel = None
+        self._squareboard = Squareboard("squareboard", self._reacts, self._messages, self)
         self._users_by_id = {}
         self._influx = InfluxDBClient()
 
@@ -215,19 +316,6 @@ class Squares(commands.Cog):
             await self._try_fetch_user(user_id)
         logging.info("warmup finished")
 
-    def _load_squareboard(self):
-        logging.info("load squareboard")
-        try:
-            with open("squareboard.data", 'rb') as f:
-                self._squareboard_entries_by_id = pickle.load(f)
-        except FileNotFoundError:
-            self._squareboard_entries_by_id = dict()
-
-    def _save_squareboard(self):
-        logging.info("save squareboard")
-        with open("squareboard.data", 'wb') as f:
-            pickle.dump(self._squareboard_entries_by_id, f)
-
     async def _error(self, ctx, text):
         embed = discord.Embed(
             title="Squares",
@@ -235,31 +323,13 @@ class Squares(commands.Cog):
         )
         await ctx.send(embed=embed)
 
-    def _message_tally(self, message_id):
-        return { color : len(self._reacts[color].by_message_id.get(message_id, [])) for color in Color }
-
-    def _user_tally_color(self, user_id, color, source_id=None):
-        reacts = self._reacts[color].by_target_id.get(user_id, [])
-        if source_id is not None:
-            reacts = [ react for react in reacts if react.source_id == source_id ]
-        return len(reacts)
-
-    def _user_tally(self, user_id, source_id=None):
-        return { color : self._user_tally_color(user_id, color, source_id) for color in Color }
-
-    def _user_score(self, user_id):
-        green = self._reacts[Color.GREEN].weighted_squares_received(user_id)
-        yellow = self._reacts[Color.YELLOW].weighted_squares_received(user_id)
-        red = self._reacts[Color.RED].weighted_squares_received(user_id)
-        return (+2) * green + (-1) * yellow + (-2) * red
-
     def _user_ids(self):
         return set().union(*(set(self._reacts[color].by_target_id.keys()) for color in Color))
 
     # A list of users and their tallies, ordered by decreasing score
     async def _summary(self):
         summary = [
-            (user, self._user_tally(user_id), self._user_score(user_id))
+            (user, self._reacts.calculate_tally_on_user(user_id), self._reacts.calculate_weighted_squares_on_user(user_id))
             for user_id in self._user_ids()
             if (user := await self._try_fetch_user(user_id)) is not None
         ]
@@ -319,7 +389,7 @@ class Squares(commands.Cog):
         await push_influx()
         # 2. update message state
         # enforce invariant: message exists in cache iff at least one square react is observed
-        tally = self._message_tally(discord_message.id)
+        tally = self._reacts.calculate_tally_on_message(discord_message.id)
         if any(tally[color] for color in Color):
             if discord_message.id not in self._messages:
                 self._messages[discord_message.id] = Message(discord_message)
@@ -327,7 +397,7 @@ class Squares(commands.Cog):
             if discord_message.id in self._messages:
                 del self._messages[discord_message.id]
         # 3. update squareboard
-        await self._refresh_squareboard_for_message_id(discord_message.id)
+        await self._squareboard.refresh_message(self._bot, discord_message.id)
 
     @commands.Cog.listener()
     async def on_raw_reaction_add(self, ctx):
@@ -445,7 +515,7 @@ class Squares(commands.Cog):
             await ctx.send(embed=embed)
 
     async def _format_message(self, message: Message) -> discord.Embed:
-        tally = self._message_tally(message.id)
+        tally = self._reacts.calculate_tally_on_message(message.id)
         match max(Color, key=lambda color: tally[color]):
             case Color.RED:
                 embed_color = discord.Colour.red()
@@ -473,51 +543,8 @@ class Squares(commands.Cog):
             embed.add_field(name="Original", value=f"[Jump!]({discord_message.jump_url})", inline=False)
         return embed
 
-    def _squareboard_score(self, message_id):
-        source_ids = { react.source_id for color in Color for react in self._reacts[color].by_message_id.get(message_id, []) }
-        return len(source_ids)
-
-    async def _refresh_squareboard_for_message_id(self, message_id):
-        if self._squareboard_channel is None:
-            [ guild ] = self._bot.guilds
-            [ self._squareboard_channel ] = [ channel for channel in guild.text_channels if channel.name == SQUAREBOARD_CHANNEL_NAME ]
-        tally = self._message_tally(message_id)
-        score = self._squareboard_score(message_id)
-        squareboard_entry = self._squareboard_entries_by_id.get(message_id)
-        upd = False
-        if squareboard_entry is None:
-            if score >= SQUAREBOARD_THRESHOLD:
-                # insert
-                logging.info("squareboard insert message(%s) tally(%s)", message_id, tally)
-                message = self._messages[message_id]
-                embed = await self._format_message(message)
-                squareboard_message = await self._squareboard_channel.send(embed=embed)
-                self._squareboard_entries_by_id[message_id] = SquareboardEntry(squareboard_message.id, tally)
-                upd = True
-        else:
-            if score < SQUAREBOARD_THRESHOLD:
-                # delete
-                logging.info("squareboard delete message(%s) tally(%s)", message_id, tally)
-                squareboard_message = await self._squareboard_channel.fetch_message(squareboard_entry.squareboard_message_id)
-                assert squareboard_message is not None
-                await squareboard_message.delete()
-                del self._squareboard_entries_by_id[message_id]
-                upd = True
-            elif tally != squareboard_entry.tally:
-                # amend
-                logging.info("squareboard amend message(%s) tally(%s)", message_id, tally)
-                squareboard_message = await self._squareboard_channel.fetch_message(squareboard_entry.squareboard_message_id)
-                assert squareboard_message is not None
-                message = self._messages[message_id]
-                embed = await self._format_message(message)
-                await squareboard_message.edit(embed=embed)
-                self._squareboard_entries_by_id[message_id].tally = tally
-                upd = True
-        if upd:
-            self._save_squareboard()
-
     def _push_influx_react(self, source, target):
-        tally = self._user_tally(target.id)
+        tally = self._reacts.calculate_tally_on_user(target.id)
         self._influx.write('squares_received', tags={
             'user_id': target.id
         }, fields={
@@ -526,7 +553,7 @@ class Squares(commands.Cog):
             'yellow': tally[Color.YELLOW],
             'red': tally[Color.RED]
         })
-        tally = self._user_tally(target.id, source.id)
+        tally = self._reacts.calculate_tally_on_user(target.id, source.id)
         self._influx.write('squares', tags={
             'cross_id': f"{source.id}-{target.id}",
             'source_id': source.id,
