@@ -1,4 +1,5 @@
 import abc
+import asyncio
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime
@@ -243,10 +244,15 @@ class Squareboard:
         self._formatter = formatter
         self._load()
 
-    async def refresh_message(self, bot, message_id):
+    # this can't be done in init for some reason
+    def _ensure_channel(self, bot):
         if self._channel is None:
             [ guild ] = bot.guilds
             [ self._channel ] = [ channel for channel in guild.text_channels if channel.name == self._channel_name ]
+
+    async def refresh_message(self, bot, discord_message: discord.Message):
+        self._ensure_channel(bot)
+        message_id = discord_message.id
         tally = self._reacts.calculate_tally_on_message(message_id)
         score = self._reacts.calculate_unique_squarers_on_message(message_id)
         entry = self._entries_by_id.get(message_id)
@@ -306,9 +312,10 @@ class Squares(MessageFormatter, commands.Cog, metaclass=CogABCMeta):
         self._bot = bot
         self._reacts = ReactsDB()
         self._messages = MessagesDB()
-        self._squareboard = Squareboard("squareboard", self._reacts, self._messages, self)
+        self._squareboard = Squareboard(SQUAREBOARD_CHANNEL_NAME, self._reacts, self._messages, self)
         self._users_by_id = {}
         self._influx = InfluxDBClient()
+        self._lock = asyncio.Lock()
 
     async def warmup(self):
         logging.info("warming up...")
@@ -328,11 +335,12 @@ class Squares(MessageFormatter, commands.Cog, metaclass=CogABCMeta):
 
     # A list of users and their tallies, ordered by decreasing score
     async def _summary(self):
-        summary = [
-            (user, self._reacts.calculate_tally_on_user(user_id), self._reacts.calculate_weighted_squares_on_user(user_id))
-            for user_id in self._user_ids()
-            if (user := await self._try_fetch_user(user_id)) is not None
-        ]
+        async with self._lock:
+            summary = [
+                (user, self._reacts.calculate_tally_on_user(user_id), self._reacts.calculate_weighted_squares_on_user(user_id))
+                for user_id in self._user_ids()
+                if (user := await self._try_fetch_user(user_id)) is not None
+            ]
         summary.sort(key=lambda entry: entry[2], reverse=True)
         return summary
 
@@ -371,9 +379,10 @@ class Squares(MessageFormatter, commands.Cog, metaclass=CogABCMeta):
         if await self._try_fetch_user(discord_message.author.id) is None:
             logging.info(f"ignore {color} react on unknown user({discord_message.author.id})")
             return
-        react_updates = await self._calculate_react_updates(discord_message, datetime.now())
-        if react_updates:
-            await self._commit(discord_message, react_updates)
+        async with self._lock:
+            react_updates = await self._calculate_react_updates(discord_message, datetime.now())
+            if react_updates:
+                await self._commit(discord_message, react_updates)
 
     async def _commit(self, discord_message, react_updates):
         # 1. update react state
@@ -397,7 +406,7 @@ class Squares(MessageFormatter, commands.Cog, metaclass=CogABCMeta):
             if discord_message.id in self._messages:
                 del self._messages[discord_message.id]
         # 3. update squareboard
-        await self._squareboard.refresh_message(self._bot, discord_message.id)
+        await self._squareboard.refresh_message(self._bot, discord_message)
 
     @commands.Cog.listener()
     async def on_raw_reaction_add(self, ctx):
@@ -443,20 +452,22 @@ class Squares(MessageFormatter, commands.Cog, metaclass=CogABCMeta):
         return discord_message
 
     async def _top(self, ctx, color, author_filter):
-        message_ids_and_counts = [
-            (message_id, len(reacts))
-            for message_id, reacts in self._reacts[color].by_message_id.items()
-            if len(reacts) > 0
-            if (author_filter is None or next(iter(reacts)).target_id == author_filter.id)
-        ]
+        async with self._lock:
+            message_ids_and_counts = [
+                (message_id, len(reacts))
+                for message_id, reacts in self._reacts[color].by_message_id.items()
+                if len(reacts) > 0
+                if (author_filter is None or next(iter(reacts)).target_id == author_filter.id)
+            ]
         message_ids = map(lambda p:p[0], sorted(message_ids_and_counts, key=lambda p:p[1], reverse=True))
         MAX_ENTRIES = 10
         embeds = []
         for message_id in message_ids:
-            message = self._messages.get(message_id)
-            if message is None:
-                continue
-            embed = await self._format_message(message)
+            async with self._lock:
+                message = self._messages.get(message_id)
+                if message is None:
+                    continue
+                embed = await self._format_message(message)
             embeds.append(embed)
             if len(embeds) >= MAX_ENTRIES:
                 break
