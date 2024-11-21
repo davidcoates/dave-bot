@@ -25,7 +25,6 @@ DESCRIPTION = GREEN_DESCRIPTION + "\n\n" + YELLOW_DESCRIPTION + "\n\n" + RED_DES
 
 SQUAREBOARD_SCORE_THRESHOLD = 6
 SQUAREBOARD_CHANNEL_NAME = "squareboard"
-STAFF_CHANNEL_NAME = "staff"
 HIDDEN_USERS = [306917480432140301]
 
 class Color(Enum):
@@ -325,7 +324,6 @@ class Squares(MessageFormatter, commands.Cog, metaclass=CogABCMeta):
         self._reacts = ReactsDB()
         self._messages = MessagesDB()
         self._squareboard = Squareboard(SQUAREBOARD_CHANNEL_NAME, self._reacts, self._messages, self)
-        self._staff = Squareboard(STAFF_CHANNEL_NAME, self._reacts, self._messages, self)
         self._users_by_id = {}
         self._influx = InfluxDBClient()
         self._lock = asyncio.Lock()
@@ -409,8 +407,6 @@ class Squares(MessageFormatter, commands.Cog, metaclass=CogABCMeta):
         # 3. update squareboard
         if discord_message.author.id not in HIDDEN_USERS:
             await self._squareboard.refresh_message(self._bot, discord_message)
-        else:
-            await self._staff.refresh_message(self._bot, discord_message)
 
     @commands.Cog.listener()
     async def on_raw_reaction_add(self, ctx):
@@ -450,7 +446,7 @@ class Squares(MessageFormatter, commands.Cog, metaclass=CogABCMeta):
         return discord_message
 
     def _should_hide_user(self, channel, user_id):
-        return user_id in HIDDEN_USERS and channel.name != STAFF_CHANNEL_NAME
+        return user_id in HIDDEN_USERS
 
     async def _top(self, ctx, color, author_filter):
         async with self._lock:
