@@ -332,12 +332,12 @@ class Squares(MessageFormatter, commands.Cog, metaclass=CogABCMeta):
         return set().union(*(set(self._reacts[color].by_target_id.keys()) for color in Color))
 
     # A list of users and their tallies, ordered by decreasing score
-    async def _calculate_summary(self, ctx):
+    async def _calculate_summary(self):
         async with self._lock:
             summary = [
                 (user, self._reacts.calculate_tally_on_user(user_id), self._reacts.calculate_weighted_squares_on_user(user_id))
                 for user_id in self._user_ids()
-                if not self._should_hide_user(ctx.channel, user_id)
+                if not self._should_hide_user(user_id)
                 if (user := await self._try_fetch_user(user_id)) is not None
             ]
         summary.sort(key=lambda entry: entry[2], reverse=True)
@@ -405,7 +405,7 @@ class Squares(MessageFormatter, commands.Cog, metaclass=CogABCMeta):
             if discord_message.id in self._messages:
                 del self._messages[discord_message.id]
         # 3. update squareboard
-        if discord_message.author.id not in HIDDEN_USERS:
+        if not self._should_hide_user(discord_message.author.id):
             await self._squareboard.refresh_message(self._bot, discord_message)
 
     @commands.Cog.listener()
@@ -445,7 +445,7 @@ class Squares(MessageFormatter, commands.Cog, metaclass=CogABCMeta):
             discord_message = None
         return discord_message
 
-    def _should_hide_user(self, channel, user_id):
+    def _should_hide_user(self, user_id):
         return user_id in HIDDEN_USERS
 
     async def _top(self, ctx, color, author_filter):
@@ -463,7 +463,7 @@ class Squares(MessageFormatter, commands.Cog, metaclass=CogABCMeta):
             message = self._messages.get(message_id)
             if message is None:
                 continue
-            if self._should_hide_user(ctx.channel, message.author_id):
+            if self._should_hide_user(message.author_id):
                 continue
             discord_message = await self._try_fetch_discord_message(message)
             async with self._lock:
@@ -491,7 +491,7 @@ class Squares(MessageFormatter, commands.Cog, metaclass=CogABCMeta):
     @commands.hybrid_command()
     async def squares(self, ctx):
         await ctx.defer()
-        summary = await self._calculate_summary(ctx)
+        summary = await self._calculate_summary()
         rows = [
             f"{i+1}. {user.name}: {tally[Color.GREEN]}🟩 {tally[Color.YELLOW]}🟨 {tally[Color.RED]}🟥 ({score})"
             for (i, (user, tally, score)) in enumerate(summary)
