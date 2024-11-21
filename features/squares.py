@@ -219,11 +219,11 @@ class MessagesDB:
 
 class MessageFormatter(metaclass=abc.ABCMeta):
 
-    async def format_message(self, message: Message) -> discord.Embed:
-        return await self._format_message(message)
+    async def format_message(self, message: Message, discord_message: Optional[discord.Message]) -> discord.Embed:
+        return await self._format_message(message, discord_message)
 
     @abc.abstractmethod
-    async def _format_message(self, message: Message) -> discord.Embed:
+    async def _format_message(self, message: Message, discord_message: Optional[discord.Message]) -> discord.Embed:
         raise NotImplementedError()
 
 
@@ -251,42 +251,52 @@ class Squareboard:
             [ self._channel ] = [ channel for channel in guild.text_channels if channel.name == self._channel_name ]
 
     async def refresh_message(self, bot, discord_message: discord.Message):
+
         self._ensure_channel(bot)
+
         message_id = discord_message.id
         tally = self._reacts.calculate_tally_on_message(message_id)
         score = self._reacts.calculate_unique_squarers_on_message(message_id)
         entry = self._entries_by_id.get(message_id)
-        upd = False
-        if entry is None:
+
+        squareboard_message = None
+        if entry is not None:
+            try:
+                squareboard_message = await self._channel.fetch_message(entry.squareboard_message_id)
+            except discord.errors.NotFound:
+                pass
+
+        async def insert():
+            logging.info("squareboard insert message(%s) tally(%s)", message_id, tally)
+            message = self._messages[message_id]
+            embed = await self._formatter.format_message(message, discord_message)
+            squareboard_message = await self._channel.send(embed=embed)
+            self._entries_by_id[message_id] = SquareboardEntry(squareboard_message.id, tally)
+            self._save()
+
+        async def delete():
+            logging.info("squareboard delete message(%s) tally(%s)", message_id, tally)
+            await squareboard_message.delete()
+            del self._entries_by_id[message_id]
+            self._save()
+
+        async def amend():
+            logging.info("squareboard amend message(%s) tally(%s)", message_id, tally)
+            message = self._messages[message_id]
+            embed = await self._formatter.format_message(message, discord_message)
+            await squareboard_message.edit(embed=embed)
+            self._entries_by_id[message_id].tally = tally
+            self._save()
+
+        if squareboard_message is None:
             if score >= SQUAREBOARD_SCORE_THRESHOLD:
-                # insert
-                logging.info("squareboard insert message(%s) tally(%s)", message_id, tally)
-                message = self._messages[message_id]
-                embed = await self._formatter.format_message(message)
-                squareboard_message = await self._channel.send(embed=embed)
-                self._entries_by_id[message_id] = SquareboardEntry(squareboard_message.id, tally)
-                upd = True
+                await insert()
         else:
             if score < SQUAREBOARD_SCORE_THRESHOLD:
-                # delete
-                logging.info("squareboard delete message(%s) tally(%s)", message_id, tally)
-                squareboard_message = await self._channel.fetch_message(entry.squareboard_message_id)
-                assert squareboard_message is not None
-                await squareboard_message.delete()
-                del self._entries_by_id[message_id]
-                upd = True
+                await delete()
             elif tally != entry.tally:
-                # amend
-                logging.info("squareboard amend message(%s) tally(%s)", message_id, tally)
-                squareboard_message = await self._channel.fetch_message(entry.squareboard_message_id)
-                assert squareboard_message is not None
-                message = self._messages[message_id]
-                embed = await self._formatter.format_message(message)
-                await squareboard_message.edit(embed=embed)
-                self._entries_by_id[message_id].tally = tally
-                upd = True
-        if upd:
-            self._save()
+                await amend()
+
 
     def _load(self):
         logging.info("load squareboard(%s)", self._channel_name)
@@ -317,12 +327,6 @@ class Squares(MessageFormatter, commands.Cog, metaclass=CogABCMeta):
         self._influx = InfluxDBClient()
         self._lock = asyncio.Lock()
 
-    async def warmup(self):
-        logging.info("warming up...")
-        for user_id in self._user_ids():
-            await self._try_fetch_user(user_id)
-        logging.info("warmup finished")
-
     async def _error(self, ctx, text):
         embed = discord.Embed(
             title="Squares",
@@ -334,7 +338,7 @@ class Squares(MessageFormatter, commands.Cog, metaclass=CogABCMeta):
         return set().union(*(set(self._reacts[color].by_target_id.keys()) for color in Color))
 
     # A list of users and their tallies, ordered by decreasing score
-    async def _summary(self):
+    async def _calculate_summary(self):
         async with self._lock:
             summary = [
                 (user, self._reacts.calculate_tally_on_user(user_id), self._reacts.calculate_weighted_squares_on_user(user_id))
@@ -437,12 +441,6 @@ class Squares(MessageFormatter, commands.Cog, metaclass=CogABCMeta):
         self._users_by_id[user_id] = user
         return user
 
-    async def _fetch_discord_message(self, channel, message_id) -> discord.Message:
-        discord_message = await channel.fetch_message(message_id)
-        if message_id not in self._messages:
-            self._messages[message_id] = Message(discord_message)
-        return discord_message
-
     async def _try_fetch_discord_message(self, message: Message) -> Optional[discord.Message]:
         try:
             channel = await self._bot.fetch_channel(message.channel_id)
@@ -463,11 +461,12 @@ class Squares(MessageFormatter, commands.Cog, metaclass=CogABCMeta):
         MAX_ENTRIES = 10
         embeds = []
         for message_id in message_ids:
+            message = self._messages.get(message_id)
+            if message is None:
+                continue
+            discord_message = await self._try_fetch_discord_message(message)
             async with self._lock:
-                message = self._messages.get(message_id)
-                if message is None:
-                    continue
-                embed = await self._format_message(message)
+                embed = await self._format_message(message, discord_message)
             embeds.append(embed)
             if len(embeds) >= MAX_ENTRIES:
                 break
@@ -494,7 +493,8 @@ class Squares(MessageFormatter, commands.Cog, metaclass=CogABCMeta):
 
     @commands.hybrid_command()
     async def squares(self, ctx):
-        summary = await self._summary()
+        await ctx.defer()
+        summary = await self._calculate_summary()
         if not summary:
             await self._error(ctx, "No users found.")
             return
@@ -525,7 +525,7 @@ class Squares(MessageFormatter, commands.Cog, metaclass=CogABCMeta):
             [ embed ] = embeds
             await ctx.send(embed=embed)
 
-    async def _format_message(self, message: Message) -> discord.Embed:
+    async def _format_message(self, message: Message, discord_message: Optional[discord.Message]) -> discord.Embed:
         tally = self._reacts.calculate_tally_on_message(message.id)
         match max(Color, key=lambda color: tally[color]):
             case Color.RED:
@@ -538,14 +538,16 @@ class Squares(MessageFormatter, commands.Cog, metaclass=CogABCMeta):
             description = message.original_content,
             colour = embed_color
         )
-        author = await self._try_fetch_user(message.author_id)
+        if discord_message is not None:
+            author = discord_message.author
+        else:
+            author = await self._try_fetch_user(message.author_id)
         if author is None:
             embed.set_author(name=message.author_id)
         else:
             embed.set_author(name=author.name, icon_url=(author.avatar.url if author.avatar is not None else None))
         tally_str = ' '.join([ str(tally[color]) + " " + COLOR_TO_SQUARE[color] for color in Color if tally[color] > 0 ])
         embed.add_field(name="Squares", value=tally_str, inline=False)
-        discord_message = await self._try_fetch_discord_message(message)
         if discord_message is None:
             embed.add_field(name="Original", value=f"[Deleted]", inline=False)
         else:
@@ -581,4 +583,3 @@ class Squares(MessageFormatter, commands.Cog, metaclass=CogABCMeta):
 async def setup(bot):
     squares = Squares(bot)
     await bot.add_cog(squares)
-    await squares.warmup()
