@@ -25,6 +25,8 @@ DESCRIPTION = GREEN_DESCRIPTION + "\n\n" + YELLOW_DESCRIPTION + "\n\n" + RED_DES
 
 SQUAREBOARD_SCORE_THRESHOLD = 6
 SQUAREBOARD_CHANNEL_NAME = "squareboard"
+STAFF_CHANNEL_NAME = "staff"
+HIDDEN_USERS = [306917480432140301]
 
 class Color(Enum):
     GREEN = 0
@@ -323,26 +325,21 @@ class Squares(MessageFormatter, commands.Cog, metaclass=CogABCMeta):
         self._reacts = ReactsDB()
         self._messages = MessagesDB()
         self._squareboard = Squareboard(SQUAREBOARD_CHANNEL_NAME, self._reacts, self._messages, self)
+        self._staff = Squareboard(STAFF_CHANNEL_NAME, self._reacts, self._messages, self)
         self._users_by_id = {}
         self._influx = InfluxDBClient()
         self._lock = asyncio.Lock()
-
-    async def _error(self, ctx, text):
-        embed = discord.Embed(
-            title="Squares",
-            description=text
-        )
-        await ctx.send(embed=embed)
 
     def _user_ids(self):
         return set().union(*(set(self._reacts[color].by_target_id.keys()) for color in Color))
 
     # A list of users and their tallies, ordered by decreasing score
-    async def _calculate_summary(self):
+    async def _calculate_summary(self, ctx):
         async with self._lock:
             summary = [
                 (user, self._reacts.calculate_tally_on_user(user_id), self._reacts.calculate_weighted_squares_on_user(user_id))
                 for user_id in self._user_ids()
+                if not self._should_hide_user(ctx.channel, user_id)
                 if (user := await self._try_fetch_user(user_id)) is not None
             ]
         summary.sort(key=lambda entry: entry[2], reverse=True)
@@ -410,7 +407,10 @@ class Squares(MessageFormatter, commands.Cog, metaclass=CogABCMeta):
             if discord_message.id in self._messages:
                 del self._messages[discord_message.id]
         # 3. update squareboard
-        await self._squareboard.refresh_message(self._bot, discord_message)
+        if discord_message.author.id not in HIDDEN_USERS:
+            await self._squareboard.refresh_message(self._bot, discord_message)
+        else:
+            await self._staff.refresh_message(self._bot, discord_message)
 
     @commands.Cog.listener()
     async def on_raw_reaction_add(self, ctx):
@@ -449,6 +449,9 @@ class Squares(MessageFormatter, commands.Cog, metaclass=CogABCMeta):
             discord_message = None
         return discord_message
 
+    def _should_hide_user(self, channel, user_id):
+        return user_id in HIDDEN_USERS and channel.name != STAFF_CHANNEL_NAME
+
     async def _top(self, ctx, color, author_filter):
         async with self._lock:
             message_ids_and_counts = [
@@ -464,17 +467,15 @@ class Squares(MessageFormatter, commands.Cog, metaclass=CogABCMeta):
             message = self._messages.get(message_id)
             if message is None:
                 continue
+            if self._should_hide_user(ctx.channel, message.author_id):
+                continue
             discord_message = await self._try_fetch_discord_message(message)
             async with self._lock:
                 embed = await self._format_message(message, discord_message)
             embeds.append(embed)
             if len(embeds) >= MAX_ENTRIES:
                 break
-        if len(embeds) > 1:
-            await Paginator.Simple().start(ctx, pages=embeds)
-        else:
-            [ embed ] = embeds
-            await ctx.send(embed=embed)
+        await self._send_embeds(ctx, embeds)
 
     @commands.hybrid_command()
     async def topred(self, ctx, author: discord.User = None):
@@ -494,10 +495,7 @@ class Squares(MessageFormatter, commands.Cog, metaclass=CogABCMeta):
     @commands.hybrid_command()
     async def squares(self, ctx):
         await ctx.defer()
-        summary = await self._calculate_summary()
-        if not summary:
-            await self._error(ctx, "No users found.")
-            return
+        summary = await self._calculate_summary(ctx)
         rows = [
             f"{i+1}. {user.name}: {tally[Color.GREEN]}🟩 {tally[Color.YELLOW]}🟨 {tally[Color.RED]}🟥 ({score})"
             for (i, (user, tally, score)) in enumerate(summary)
@@ -519,11 +517,19 @@ class Squares(MessageFormatter, commands.Cog, metaclass=CogABCMeta):
             )
             embed.add_field(name="```"+page+"```", value="", inline=False)
             embeds.append(embed)
-        if len(embeds) > 1:
-            await Paginator.Simple().start(ctx, pages=embeds)
-        else:
+        await self._send_embeds(ctx, embeds)
+
+    async def _send_embeds(self, ctx, embeds: list[discord.Embed]):
+        if not embeds:
+            embed = discord.Embed(
+                title="[No results]"
+            )
+            await ctx.send(embed=embed)
+        elif len(embeds) == 1:
             [ embed ] = embeds
             await ctx.send(embed=embed)
+        else:
+            await Paginator.Simple().start(ctx, pages=embeds)
 
     async def _format_message(self, message: Message, discord_message: Optional[discord.Message]) -> discord.Embed:
         tally = self._reacts.calculate_tally_on_message(message.id)
