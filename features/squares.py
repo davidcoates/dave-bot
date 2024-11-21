@@ -349,7 +349,7 @@ class Squares(MessageFormatter, commands.Cog, metaclass=CogABCMeta):
         def source_is_valid(source):
             if discord_message.author.id == source.id:
                 return False # don't count self reacts
-            if source.bot and source.id != self._bot.user_id:
+            if source.bot and source.id != self._bot.user.id:
                 return False # don't count bots (except us)
             return True
         react_updates = ReactUpdates()
