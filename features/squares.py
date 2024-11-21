@@ -107,6 +107,43 @@ class ReactUpdates:
         return bool(self.adds) or bool(self.removes)
 
 
+class ReactsDB:
+
+    def __init__(self):
+        self._load()
+
+    def commit(self, react_updates: ReactUpdates):
+        for (color, react) in react_updates.adds:
+            self._reacts_by_color[color].add(react)
+        for (color, react) in react_updates.removes:
+            self._reacts_by_color[color].remove(react)
+        self._save()
+
+    def __getitem__(self, color) -> Reacts:
+        return self._reacts_by_color[color]
+
+    def _load(self):
+        logging.info("load reacts")
+        try:
+            with open("reacts.data", 'rb') as f:
+                self._reacts_by_color = pickle.load(f)
+            logging.info("loaded reacts from file: #reacts(%d) #messages(%d) #targets(%d)",
+                sum(len(self._reacts_by_color[color])               for color in Color),
+                sum(len(self._reacts_by_color[color].by_message_id) for color in Color),
+                sum(len(self._reacts_by_color[color].by_target_id)  for color in Color))
+        except FileNotFoundError:
+            self._reacts_by_color = {
+                Color.GREEN  : Reacts(Color.GREEN),
+                Color.YELLOW : Reacts(Color.YELLOW),
+                Color.RED    : Reacts(Color.RED)
+            }
+
+    def _save(self):
+        logging.info("save reacts")
+        with open("reacts.data", 'wb') as f:
+            pickle.dump(self._reacts_by_color, f)
+
+
 @dataclass
 class Message:
     id: int
@@ -120,6 +157,42 @@ class Message:
         self.author_id = discord_message.author.id
         self.original_content = discord_message.content
 
+class MessagesDB:
+
+    def __init__(self):
+        self._load()
+
+    def __contains__(self, message_id):
+        return message_id in self._messages_by_id
+
+    def __getitem__(self, message_id):
+        return self._messages_by_id[message_id]
+
+    def get(self, message_id):
+        return self._messages_by_id.get(message_id)
+
+    def __setitem__(self, message_id, message):
+        self._messages_by_id[message_id] = message
+        self._save()
+
+    def __delitem__(self, message_id):
+        del self._messages_by_id[message_id]
+        self._save()
+
+    def _load(self):
+        logging.info("load message cache")
+        try:
+            with open("messages.data", 'rb') as f:
+                self._messages_by_id = pickle.load(f)
+        except FileNotFoundError:
+            self._messages_by_id = dict()
+
+    def _save(self):
+        logging.info("save message cache")
+        with open("messages.data", 'wb') as f:
+            pickle.dump(self._messages_by_id, f)
+
+
 @dataclass
 class SquareboardEntry:
     squareboard_message_id: int
@@ -129,8 +202,8 @@ class Squares(commands.Cog):
 
     def __init__(self, bot):
         self._bot = bot
-        self._load_reacts()
-        self._load_message_cache()
+        self._reacts = ReactsDB()
+        self._messages = MessagesDB()
         self._load_squareboard()
         self._squareboard_channel = None
         self._users_by_id = {}
@@ -141,40 +214,6 @@ class Squares(commands.Cog):
         for user_id in self._user_ids():
             await self._try_fetch_user(user_id)
         logging.info("warmup finished")
-
-    def _load_reacts(self):
-        logging.info("load reacts")
-        try:
-            with open("reacts.data", 'rb') as f:
-                self._reacts = pickle.load(f)
-            logging.info("loaded reacts from file: #reacts(%d) #messages(%d) #targets(%d)",
-                sum(len(self._reacts[color]) for color in Color),
-                sum(len(self._reacts[color].by_message_id) for color in Color),
-                sum(len(self._reacts[color].by_target_id) for color in Color))
-        except FileNotFoundError:
-            self._reacts = {
-                Color.GREEN : Reacts(Color.GREEN),
-                Color.YELLOW : Reacts(Color.YELLOW),
-                Color.RED : Reacts(Color.RED)
-            }
-
-    def _save_reacts(self):
-        logging.info("save reacts")
-        with open("reacts.data", 'wb') as f:
-            pickle.dump(self._reacts, f)
-
-    def _load_message_cache(self):
-        logging.info("load message cache")
-        try:
-            with open("messages.data", 'rb') as f:
-                self._messages_by_id = pickle.load(f)
-        except FileNotFoundError:
-            self._messages_by_id = dict()
-
-    def _save_message_cache(self):
-        logging.info("save message cache")
-        with open("messages.data", 'wb') as f:
-            pickle.dump(self._messages_by_id, f)
 
     def _load_squareboard(self):
         logging.info("load squareboard")
@@ -276,23 +315,17 @@ class Squares(commands.Cog):
                 assert source is not None and target is not None
                 self._push_influx_react(source, target)
         await push_influx()
-        for (color, react) in react_updates.adds:
-            self._reacts[color].add(react)
-        for (color, react) in react_updates.removes:
-            self._reacts[color].remove(react)
+        self._reacts.commit(react_updates)
         await push_influx()
-        self._save_reacts()
         # 2. update message state
         # enforce invariant: message exists in cache iff at least one square react is observed
         tally = self._message_tally(discord_message.id)
         if any(tally[color] for color in Color):
-            if discord_message.id not in self._messages_by_id:
-                self._messages_by_id[discord_message.id] = Message(discord_message)
-                self._save_message_cache()
+            if discord_message.id not in self._messages:
+                self._messages[discord_message.id] = Message(discord_message)
         else:
-            if discord_message.id in self._messages_by_id:
-                del self._messages_by_id[discord_message.id]
-                self._save_message_cache()
+            if discord_message.id in self._messages:
+                del self._messages[discord_message.id]
         # 3. update squareboard
         await self._refresh_squareboard_for_message_id(discord_message.id)
 
@@ -327,8 +360,8 @@ class Squares(commands.Cog):
 
     async def _fetch_discord_message(self, channel, message_id) -> discord.Message:
         discord_message = await channel.fetch_message(message_id)
-        if message_id not in self._messages_by_id:
-            self._messages_by_id[message_id] = Message(discord_message)
+        if message_id not in self._messages:
+            self._messages[message_id] = Message(discord_message)
         return discord_message
 
     async def _try_fetch_discord_message(self, message: Message) -> Optional[discord.Message]:
@@ -350,7 +383,7 @@ class Squares(commands.Cog):
         MAX_ENTRIES = 10
         embeds = []
         for message_id in message_ids:
-            message = self._messages_by_id.get(message_id)
+            message = self._messages.get(message_id)
             if message is None:
                 continue
             embed = await self._format_message(message)
@@ -456,7 +489,7 @@ class Squares(commands.Cog):
             if score >= SQUAREBOARD_THRESHOLD:
                 # insert
                 logging.info("squareboard insert message(%s) tally(%s)", message_id, tally)
-                message = self._messages_by_id[message_id]
+                message = self._messages[message_id]
                 embed = await self._format_message(message)
                 squareboard_message = await self._squareboard_channel.send(embed=embed)
                 self._squareboard_entries_by_id[message_id] = SquareboardEntry(squareboard_message.id, tally)
@@ -475,7 +508,7 @@ class Squares(commands.Cog):
                 logging.info("squareboard amend message(%s) tally(%s)", message_id, tally)
                 squareboard_message = await self._squareboard_channel.fetch_message(squareboard_entry.squareboard_message_id)
                 assert squareboard_message is not None
-                message = self._messages_by_id[message_id]
+                message = self._messages[message_id]
                 embed = await self._format_message(message)
                 await squareboard_message.edit(embed=embed)
                 self._squareboard_entries_by_id[message_id].tally = tally
