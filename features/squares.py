@@ -1,5 +1,6 @@
 import abc
 import asyncio
+import os
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime
@@ -26,6 +27,7 @@ DESCRIPTION = GREEN_DESCRIPTION + "\n\n" + YELLOW_DESCRIPTION + "\n\n" + RED_DES
 SQUAREBOARD_SCORE_THRESHOLD = 6
 SQUAREBOARD_CHANNEL_NAME = "squareboard"
 HIDDEN_USERS = [306917480432140301]
+DATA_DIR = "data"
 
 class Color(Enum):
     GREEN = 0
@@ -119,6 +121,7 @@ class ReactUpdates:
 class ReactsDB:
 
     def __init__(self):
+        self._filename = os.path.join(DATA_DIR, "reacts.data")
         self._load()
 
     def commit(self, react_updates: ReactUpdates):
@@ -150,7 +153,7 @@ class ReactsDB:
     def _load(self):
         logging.info("load reacts")
         try:
-            with open("reacts.data", 'rb') as f:
+            with open(self._filename, 'rb') as f:
                 self._reacts_by_color = pickle.load(f)
             logging.info("loaded reacts from file: #reacts(%d) #messages(%d) #targets(%d)",
                 sum(len(self._reacts_by_color[color])               for color in Color),
@@ -165,7 +168,7 @@ class ReactsDB:
 
     def _save(self):
         logging.info("save reacts")
-        with open("reacts.data", 'wb') as f:
+        with open(self._filename, 'wb') as f:
             pickle.dump(self._reacts_by_color, f)
 
 
@@ -185,6 +188,7 @@ class Message:
 class MessagesDB:
 
     def __init__(self):
+        self._filename = os.path.join(DATA_DIR, "messages.data")
         self._load()
 
     def __contains__(self, message_id):
@@ -207,14 +211,14 @@ class MessagesDB:
     def _load(self):
         logging.info("load message cache")
         try:
-            with open("messages.data", 'rb') as f:
+            with open(self._filename, 'rb') as f:
                 self._messages_by_id = pickle.load(f)
         except FileNotFoundError:
             self._messages_by_id = dict()
 
     def _save(self):
         logging.info("save message cache")
-        with open("messages.data", 'wb') as f:
+        with open(self._filename, 'wb') as f:
             pickle.dump(self._messages_by_id, f)
 
 
@@ -238,7 +242,7 @@ class Squareboard:
 
     def __init__(self, channel_name, reacts: ReactsDB, messages: MessagesDB, formatter: MessageFormatter):
         self._channel_name = channel_name
-        self._filename = "squareboard.data" if channel_name == "squareboard" else f"squareboard-{channel_name}.data"
+        self._filename = os.path.join(DATA_DIR, "squareboard.data" if channel_name == "squareboard" else f"squareboard-{channel_name}.data")
         self._channel = None
         self._reacts = reacts
         self._messages = messages
