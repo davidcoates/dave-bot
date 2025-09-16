@@ -16,6 +16,12 @@ from discord.ext import commands
 import Paginator
 
 
+logger = logging.getLogger(__name__)
+
+HIDDEN_USER_IDS = [ int(user_id) for user_id in os.getenv("HIDDEN_USER_IDS").split(',') ] if "HIDDEN_USER_IDS" in os.environ else []
+logger.info(f"hiding users({HIDDEN_USER_IDS})")
+
+
 GREEN_DESCRIPTION = "🟩 Green is the highest level of privileges (when the child is behaving well)."
 YELLOW_DESCRIPTION = "🟨 Yellow is the next level (when the child is engaging in minor problem behaviors)."
 RED_DESCRIPTION = "🟥 Red is the level on which the child is engaging in severe problem behaviors, such as a meltdown or aggressive behavior."
@@ -24,8 +30,8 @@ DESCRIPTION = GREEN_DESCRIPTION + "\n\n" + YELLOW_DESCRIPTION + "\n\n" + RED_DES
 
 SQUAREBOARD_SCORE_THRESHOLD = 6
 SQUAREBOARD_CHANNEL_NAME = "squareboard"
-HIDDEN_USERS = [306917480432140301, 163425991543226368]
 DATA_DIR = "data"
+
 
 class Color(Enum):
     GREEN = 0
@@ -34,6 +40,7 @@ class Color(Enum):
 
 SQUARE_TO_COLOR = { "🟥" : Color.RED, "🟨" : Color.YELLOW, "🟩" : Color.GREEN }
 COLOR_TO_SQUARE = { Color.RED : "🟥", Color.YELLOW : "🟨", Color.GREEN : "🟩" }
+
 
 @dataclass
 class React:
@@ -66,13 +73,13 @@ class Reacts:
         self.by_source_id = defaultdict(set)
 
     def add(self, react):
-        logging.info(f"add {self.color} react by {react.source_id} to {react.target_id} on message({react.message_id})")
+        logger.info(f"add {self.color} react by {react.source_id} to {react.target_id} on message({react.message_id})")
         self.by_message_id[react.message_id].add(react)
         self.by_target_id[react.target_id].add(react)
         self.by_source_id[react.source_id].add(react)
 
     def remove(self, react):
-        logging.info(f"remove {self.color} react by {react.source_id} to {react.target_id} on message({react.message_id})")
+        logger.info(f"remove {self.color} react by {react.source_id} to {react.target_id} on message({react.message_id})")
         self.by_message_id[react.message_id].discard(react)
         self.by_target_id[react.target_id].discard(react)
         self.by_source_id[react.source_id].discard(react)
@@ -149,11 +156,11 @@ class ReactsDB:
         return self._reacts_by_color[color]
 
     def _load(self):
-        logging.info("load reacts")
+        logger.info("load reacts")
         try:
             with open(self._filename, 'rb') as f:
                 self._reacts_by_color = pickle.load(f)
-            logging.info("loaded reacts from file: #reacts(%d) #messages(%d) #targets(%d)",
+            logger.info("loaded reacts from file: #reacts(%d) #messages(%d) #targets(%d)",
                 sum(len(self._reacts_by_color[color])               for color in Color),
                 sum(len(self._reacts_by_color[color].by_message_id) for color in Color),
                 sum(len(self._reacts_by_color[color].by_target_id)  for color in Color))
@@ -165,7 +172,7 @@ class ReactsDB:
             }
 
     def _save(self):
-        logging.info("save reacts")
+        logger.info("save reacts")
         with open(self._filename, 'wb') as f:
             pickle.dump(self._reacts_by_color, f)
 
@@ -207,7 +214,7 @@ class MessagesDB:
         self._save()
 
     def _load(self):
-        logging.info("load message cache")
+        logger.info("load message cache")
         try:
             with open(self._filename, 'rb') as f:
                 self._messages_by_id = pickle.load(f)
@@ -215,7 +222,7 @@ class MessagesDB:
             self._messages_by_id = dict()
 
     def _save(self):
-        logging.info("save message cache")
+        logger.info("save message cache")
         with open(self._filename, 'wb') as f:
             pickle.dump(self._messages_by_id, f)
 
@@ -270,7 +277,7 @@ class Squareboard:
                 pass
 
         async def insert():
-            logging.info("squareboard insert message(%s) tally(%s)", message_id, tally)
+            logger.info("squareboard insert message(%s) tally(%s)", message_id, tally)
             message = self._messages[message_id]
             embed = await self._formatter.format_message(message, discord_message)
             squareboard_message = await self._channel.send(embed=embed)
@@ -278,13 +285,13 @@ class Squareboard:
             self._save()
 
         async def delete():
-            logging.info("squareboard delete message(%s) tally(%s)", message_id, tally)
+            logger.info("squareboard delete message(%s) tally(%s)", message_id, tally)
             await squareboard_message.delete()
             del self._entries_by_id[message_id]
             self._save()
 
         async def amend():
-            logging.info("squareboard amend message(%s) tally(%s)", message_id, tally)
+            logger.info("squareboard amend message(%s) tally(%s)", message_id, tally)
             message = self._messages[message_id]
             embed = await self._formatter.format_message(message, discord_message)
             await squareboard_message.edit(embed=embed)
@@ -302,7 +309,7 @@ class Squareboard:
 
 
     def _load(self):
-        logging.info("load squareboard(%s)", self._channel_name)
+        logger.info("load squareboard(%s)", self._channel_name)
         try:
             with open(self._filename, 'rb') as f:
                 self._entries_by_id = pickle.load(f)
@@ -310,7 +317,7 @@ class Squareboard:
             self._entries_by_id = dict()
 
     def _save(self):
-        logging.info("save squareboard(%s)", self._channel_name)
+        logger.info("save squareboard(%s)", self._channel_name)
         with open(self._filename, 'wb') as f:
             pickle.dump(self._entries_by_id, f)
 
@@ -377,7 +384,7 @@ class Squares(MessageFormatter, commands.Cog, metaclass=CogABCMeta):
         channel = await self._bot.fetch_channel(ctx.channel_id)
         discord_message = await channel.fetch_message(ctx.message_id)
         if await self._try_fetch_user(discord_message.author.id) is None:
-            logging.info(f"ignore {color} react on unknown user({discord_message.author.id})")
+            logger.info(f"ignore {color} react on unknown user({discord_message.author.id})")
             return
         async with self._lock:
             react_updates = await self._calculate_react_updates(discord_message, datetime.now())
@@ -425,7 +432,7 @@ class Squares(MessageFormatter, commands.Cog, metaclass=CogABCMeta):
         try:
             user = await self._bot.fetch_user(user_id)
         except discord.errors.NotFound:
-            logging.debug("user(%d) not found", user_id)
+            logger.debug("user(%d) not found", user_id)
         self._users_by_id[user_id] = user
         return user
 
@@ -438,7 +445,7 @@ class Squares(MessageFormatter, commands.Cog, metaclass=CogABCMeta):
         return discord_message
 
     def _should_hide_user(self, user_id):
-        return user_id in HIDDEN_USERS
+        return user_id in HIDDEN_USER_IDS
 
     async def _top(self, ctx, color, author_filter):
         async with self._lock:
