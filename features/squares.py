@@ -15,8 +15,6 @@ import discord
 from discord.ext import commands
 import Paginator
 
-from lib.influx import *
-
 
 GREEN_DESCRIPTION = "🟩 Green is the highest level of privileges (when the child is behaving well)."
 YELLOW_DESCRIPTION = "🟨 Yellow is the next level (when the child is engaging in minor problem behaviors)."
@@ -329,7 +327,6 @@ class Squares(MessageFormatter, commands.Cog, metaclass=CogABCMeta):
         self._messages = MessagesDB()
         self._squareboard = Squareboard(SQUAREBOARD_CHANNEL_NAME, self._reacts, self._messages, self)
         self._users_by_id = {}
-        self._influx = InfluxDBClient()
         self._lock = asyncio.Lock()
 
     def _user_ids(self):
@@ -389,16 +386,7 @@ class Squares(MessageFormatter, commands.Cog, metaclass=CogABCMeta):
 
     async def _commit(self, discord_message, react_updates):
         # 1. update react state
-        # hack: push to influx both before and after for differences to always be accurate
-        async def push_influx():
-            for (source_id, target_id) in react_updates.user_pairs:
-                source = await self._try_fetch_user(source_id)
-                target = await self._try_fetch_user(target_id)
-                assert source is not None and target is not None
-                self._push_influx_react(source, target)
-        await push_influx()
         self._reacts.commit(react_updates)
-        await push_influx()
         # 2. update message state
         # enforce invariant: message exists in cache iff at least one square react is observed
         tally = self._reacts.calculate_tally_on_message(discord_message.id)
@@ -561,29 +549,6 @@ class Squares(MessageFormatter, commands.Cog, metaclass=CogABCMeta):
                 embed.set_thumbnail(url=discord_message.attachments[0].url)
             embed.add_field(name="Original", value=f"[Jump!]({discord_message.jump_url})", inline=False)
         return embed
-
-    def _push_influx_react(self, source, target):
-        tally = self._reacts.calculate_tally_on_user(target.id)
-        self._influx.write('squares_received', tags={
-            'user_id': target.id
-        }, fields={
-            'user_name': target.name,
-            'green': tally[Color.GREEN],
-            'yellow': tally[Color.YELLOW],
-            'red': tally[Color.RED]
-        })
-        tally = self._reacts.calculate_tally_on_user(target.id, source.id)
-        self._influx.write('squares', tags={
-            'cross_id': f"{source.id}-{target.id}",
-            'source_id': source.id,
-            'target_id': target.id
-        }, fields={
-            'source_name': source.name,
-            'target_name': target.name,
-            'green': tally[Color.GREEN],
-            'yellow': tally[Color.YELLOW],
-            'red': tally[Color.RED]
-        })
 
 
 async def setup(bot):

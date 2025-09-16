@@ -8,6 +8,5 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY dave-bot.py .
 COPY features ./features
-COPY lib ./lib
 
 CMD ["python", "dave-bot.py"]
