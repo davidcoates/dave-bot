@@ -1,0 +1,16 @@
+services:
+  dave-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: david/dave-bot:latest
+    container_name: dave-bot
+    restart: unless-stopped
+    dns:
+      - 1.1.1.1
+      - 9.9.9.9
+    environment:
+      DISCORD_BOT_TOKEN: ${DISCORD_BOT_TOKEN}
+      HIDDEN_USER_IDS: ${HIDDEN_USER_IDS}
+    volumes:
+      - ${HOST_DATA_PATH}:/app/data

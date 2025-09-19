@@ -1,6 +1,6 @@
 FROM python:3.10
 
-WORKDIR /dave-bot
+WORKDIR /app
 
 COPY requirements.txt .
 

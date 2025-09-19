@@ -3,15 +3,8 @@ A discord bot for Dave's discord server.
 
 # Setup
 
-Run `dave-bot.py` with Python3.10 after installing the `requirements.txt`. The bot token must be supplied in the `DISCORD_BOT_TOKEN` environment variable.
-
-# Features & Commands
-
-## Squares
-
-Tracks users whose messages receive green, yellow, and red square reacts. These squares are used a proxy for good/bad behaviour.
-
-Commands:
-- `!info`: A decription of the square colours.
-- `!squares`: Show a summary of behavious statistics.
-- `!topred`, `!topyellow`, `!topgreen`: Show the most-squared messages for the given color.
+1. Create environment variables in `.env`:
+  - `DISCORD_BOT_TOKEN`: The discord bot token.
+  - `HOST_DATA_PATH`: The directory on the host where persistent data is written.
+  - `HIDDEN_USER_IDS`: A comma separated list of Discord user IDs to exclude (optional).
+2. `docker compose up -d`.
