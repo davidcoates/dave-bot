@@ -3,7 +3,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: david/dave-bot:latest
+    image: david/dave-bot
     container_name: dave-bot
     restart: unless-stopped
     dns:
